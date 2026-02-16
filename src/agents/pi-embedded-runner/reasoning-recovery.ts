@@ -256,6 +256,12 @@ export async function resetSessionForReasoningRecovery(params: {
       return { reset: false, reason: "empty session" };
     }
     sessionManager.resetLeaf();
+    // resetLeaf() only updates in-memory state. Persist a new root marker so
+    // subsequent SessionManager.open() calls resolve an empty active branch.
+    sessionManager.appendCustomEntry("openai_reasoning_recovery_reset", {
+      reason: "openai_reasoning_sequence",
+      at: new Date().toISOString(),
+    });
     log.warn(
       `[openai-reasoning-recovery] reset session history as last-resort recovery: sessionKey=${params.sessionKey ?? params.sessionId ?? "unknown"}`,
     );
