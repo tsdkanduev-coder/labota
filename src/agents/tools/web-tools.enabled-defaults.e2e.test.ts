@@ -85,7 +85,41 @@ describe("web_search country and language parameters", () => {
     await tool?.execute?.(1, { query: "test", ui_lang: "de" });
 
     const url = new URL(mockFetch.mock.calls[0][0] as string);
-    expect(url.searchParams.get("ui_lang")).toBe("de");
+    expect(url.searchParams.get("ui_lang")).toBe("de-DE");
+  });
+
+  it("should normalize short Russian ui_lang to Brave format", async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ web: { results: [] } }),
+      } as Response),
+    );
+    // @ts-expect-error mock fetch
+    global.fetch = mockFetch;
+
+    const tool = createWebSearchTool({ config: undefined, sandboxed: true });
+    await tool?.execute?.(1, { query: "test", ui_lang: "ru" });
+
+    const url = new URL(mockFetch.mock.calls[0][0] as string);
+    expect(url.searchParams.get("ui_lang")).toBe("ru-RU");
+  });
+
+  it("should omit unsupported ui_lang values", async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ web: { results: [] } }),
+      } as Response),
+    );
+    // @ts-expect-error mock fetch
+    global.fetch = mockFetch;
+
+    const tool = createWebSearchTool({ config: undefined, sandboxed: true });
+    await tool?.execute?.(1, { query: "test", ui_lang: "ruu" });
+
+    const url = new URL(mockFetch.mock.calls[0][0] as string);
+    expect(url.searchParams.has("ui_lang")).toBe(false);
   });
 
   it("should pass freshness parameter to Brave API", async () => {

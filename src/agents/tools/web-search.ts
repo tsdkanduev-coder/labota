@@ -35,6 +35,67 @@ const DEFAULT_GROK_MODEL = "grok-4-1-fast";
 const SEARCH_CACHE = new Map<string, CacheEntry<Record<string, unknown>>>();
 const BRAVE_FRESHNESS_SHORTCUTS = new Set(["pd", "pw", "pm", "py"]);
 const BRAVE_FRESHNESS_RANGE = /^(\d{4}-\d{2}-\d{2})to(\d{4}-\d{2}-\d{2})$/;
+const BRAVE_UI_LANG_ALLOWLIST = new Set([
+  "es-AR",
+  "en-AU",
+  "de-AT",
+  "nl-BE",
+  "fr-BE",
+  "pt-BR",
+  "en-CA",
+  "fr-CA",
+  "es-CL",
+  "da-DK",
+  "fi-FI",
+  "fr-FR",
+  "de-DE",
+  "el-GR",
+  "zh-HK",
+  "en-IN",
+  "en-ID",
+  "it-IT",
+  "ja-JP",
+  "ko-KR",
+  "en-MY",
+  "es-MX",
+  "nl-NL",
+  "en-NZ",
+  "no-NO",
+  "zh-CN",
+  "pl-PL",
+  "en-PH",
+  "ru-RU",
+  "en-ZA",
+  "es-ES",
+  "sv-SE",
+  "fr-CH",
+  "de-CH",
+  "zh-TW",
+  "tr-TR",
+  "en-GB",
+  "en-US",
+  "es-US",
+]);
+const BRAVE_UI_LANG_SHORTCUTS: Record<string, string> = {
+  da: "da-DK",
+  de: "de-DE",
+  el: "el-GR",
+  en: "en-US",
+  es: "es-ES",
+  fi: "fi-FI",
+  fr: "fr-FR",
+  it: "it-IT",
+  ja: "ja-JP",
+  ko: "ko-KR",
+  nl: "nl-NL",
+  no: "no-NO",
+  pl: "pl-PL",
+  pt: "pt-BR",
+  ru: "ru-RU",
+  sv: "sv-SE",
+  tr: "tr-TR",
+  zh: "zh-CN",
+};
 
 const WebSearchSchema = Type.Object({
   query: Type.String({ description: "Search query string." }),
@@ -403,6 +464,32 @@ function normalizeFreshness(value: string | undefined): string | undefined {
   return `${start}to${end}`;
 }
 
+function normalizeBraveUiLang(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const cleaned = trimmed.replace("_", "-");
+  if (BRAVE_UI_LANG_ALLOWLIST.has(cleaned)) {
+    return cleaned;
+  }
+
+  const [lang, region] = cleaned.split("-");
+  if (lang && region) {
+    const canonical = `${lang.toLowerCase()}-${region.toUpperCase()}`;
+    if (BRAVE_UI_LANG_ALLOWLIST.has(canonical)) {
+      return canonical;
+    }
+  }
+
+  if (/^[a-z]{2}$/i.test(cleaned)) {
+    return BRAVE_UI_LANG_SHORTCUTS[cleaned.toLowerCase()];
+  }
+
+  return undefined;
+}
+
 /**
  * Map normalized freshness values (pd/pw/pm/py) to Perplexity's
  * search_recency_filter values (day/week/month/year).
@@ -746,7 +833,8 @@ export function createWebSearchTool(options?: {
         readNumberParam(params, "count", { integer: true }) ?? search?.maxResults ?? undefined;
       const country = readStringParam(params, "country");
       const search_lang = readStringParam(params, "search_lang");
-      const ui_lang = readStringParam(params, "ui_lang");
+      const rawUiLang = readStringParam(params, "ui_lang");
+      const ui_lang = provider === "brave" ? normalizeBraveUiLang(rawUiLang) : rawUiLang;
       const rawFreshness = readStringParam(params, "freshness");
       if (rawFreshness && provider !== "brave" && provider !== "perplexity") {
         return jsonResult({
@@ -795,6 +883,7 @@ export const __testing = {
   isDirectPerplexityBaseUrl,
   resolvePerplexityRequestModel,
   normalizeFreshness,
+  normalizeBraveUiLang,
   freshnessToPerplexityRecency,
   resolveGrokApiKey,
   resolveGrokModel,
