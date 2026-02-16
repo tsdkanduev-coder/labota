@@ -183,6 +183,54 @@ describe("overflow compaction in run loop", () => {
     expect(result.meta.error).toBeUndefined();
   });
 
+  it("retries prompt when reasoning sequence error is returned as assistant error", async () => {
+    mockedIsOpenAIReasoningSequenceError.mockReturnValue(true);
+    mockedExtractOpenAIReasoningSequenceItemId.mockReturnValue("rs_test");
+    mockedScrubOpenAIReasoningSignaturesInSession.mockResolvedValueOnce({
+      recovered: true,
+      changedMessages: 1,
+      droppedMessages: 0,
+    });
+
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          promptError: null,
+          lastAssistant: {
+            stopReason: "error",
+            errorMessage:
+              "400 Item 'rs_test' of type 'reasoning' was provided without its required following item.",
+          } as EmbeddedRunAttemptResult["lastAssistant"],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    mockedResolveModel.mockReturnValueOnce({
+      model: {
+        id: "gpt-5.1",
+        provider: "openai",
+        contextWindow: 200000,
+        api: "openai-responses",
+      },
+      error: null,
+      authStorage: {
+        setRuntimeApiKey: vi.fn(),
+      },
+      modelRegistry: {},
+    });
+
+    const result = await runEmbeddedPiAgent({
+      ...baseParams,
+      provider: "openai",
+      model: "gpt-5.1",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedScrubOpenAIReasoningSignaturesInSession).toHaveBeenCalledTimes(1);
+    expect(mockedResetSessionForReasoningRecovery).not.toHaveBeenCalled();
+    expect(result.meta.error).toBeUndefined();
+  });
+
   it("retries after successful compaction on context overflow promptError", async () => {
     const overflowError = new Error("request_too_large: Request size exceeds model context window");
 

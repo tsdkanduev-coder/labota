@@ -515,6 +515,8 @@ export async function runEmbeddedPiAgent(
             lastAssistant?.stopReason === "error"
               ? lastAssistant.errorMessage?.trim() || formattedAssistantErrorText
               : undefined;
+          const isOpenAIResponsesApi =
+            model.api === "openai-responses" || model.api === "openai-codex-responses";
 
           const contextOverflowError = !aborted
             ? (() => {
@@ -698,48 +700,59 @@ export async function runEmbeddedPiAgent(
             };
           }
 
-          if (promptError && !aborted) {
-            const errorText = describeUnknownError(promptError);
-            if (
-              provider === "openai" &&
-              model.api === "openai-responses" &&
-              isOpenAIReasoningSequenceError(errorText)
-            ) {
-              const reasoningItemId = extractOpenAIReasoningSequenceItemId(errorText) ?? undefined;
-              if (!reasoningSignatureRecoveryAttempted) {
-                reasoningSignatureRecoveryAttempted = true;
-                const recovered = await scrubOpenAIReasoningSignaturesInSession({
-                  sessionFile: params.sessionFile,
-                  itemId: reasoningItemId,
-                  sessionId: params.sessionId,
-                  sessionKey: params.sessionKey,
-                });
-                if (recovered.recovered) {
-                  log.warn(
-                    `openai reasoning-sequence recovery: scrubbed signatures (item=${reasoningItemId ?? "any"}); retrying prompt`,
-                  );
-                  overflowCompactionAttempts = 0;
-                  toolResultTruncationAttempted = false;
-                  continue;
-                }
-              }
-              if (!reasoningSessionResetAttempted) {
-                reasoningSessionResetAttempted = true;
-                const reset = await resetSessionForReasoningRecovery({
-                  sessionFile: params.sessionFile,
-                  sessionId: params.sessionId,
-                  sessionKey: params.sessionKey,
-                });
-                if (reset.reset) {
-                  log.warn(
-                    "openai reasoning-sequence recovery: reset session history; retrying prompt",
-                  );
-                  overflowCompactionAttempts = 0;
-                  toolResultTruncationAttempted = false;
-                  continue;
-                }
+          const reasoningSequenceErrorText =
+            !aborted && provider === "openai" && isOpenAIResponsesApi
+              ? (() => {
+                  if (promptError) {
+                    const errorText = describeUnknownError(promptError);
+                    return isOpenAIReasoningSequenceError(errorText) ? errorText : null;
+                  }
+                  return assistantErrorText && isOpenAIReasoningSequenceError(assistantErrorText)
+                    ? assistantErrorText
+                    : null;
+                })()
+              : null;
+
+          if (reasoningSequenceErrorText) {
+            const reasoningItemId =
+              extractOpenAIReasoningSequenceItemId(reasoningSequenceErrorText) ?? undefined;
+            if (!reasoningSignatureRecoveryAttempted) {
+              reasoningSignatureRecoveryAttempted = true;
+              const recovered = await scrubOpenAIReasoningSignaturesInSession({
+                sessionFile: params.sessionFile,
+                itemId: reasoningItemId,
+                sessionId: params.sessionId,
+                sessionKey: params.sessionKey,
+              });
+              if (recovered.recovered) {
+                log.warn(
+                  `openai reasoning-sequence recovery: scrubbed signatures (item=${reasoningItemId ?? "any"}); retrying prompt`,
+                );
+                overflowCompactionAttempts = 0;
+                toolResultTruncationAttempted = false;
+                continue;
               }
             }
+            if (!reasoningSessionResetAttempted) {
+              reasoningSessionResetAttempted = true;
+              const reset = await resetSessionForReasoningRecovery({
+                sessionFile: params.sessionFile,
+                sessionId: params.sessionId,
+                sessionKey: params.sessionKey,
+              });
+              if (reset.reset) {
+                log.warn(
+                  "openai reasoning-sequence recovery: reset session history; retrying prompt",
+                );
+                overflowCompactionAttempts = 0;
+                toolResultTruncationAttempted = false;
+                continue;
+              }
+            }
+          }
+
+          if (promptError && !aborted) {
+            const errorText = describeUnknownError(promptError);
             // Handle role ordering errors with a user-friendly message
             if (/incorrect role information|roles must alternate/i.test(errorText)) {
               return {
