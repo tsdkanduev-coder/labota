@@ -116,7 +116,7 @@ describe("web_search country and language parameters", () => {
     global.fetch = mockFetch;
 
     const tool = createWebSearchTool({ config: undefined, sandboxed: true });
-    await tool?.execute?.(1, { query: "test", ui_lang: "ruu" });
+    await tool?.execute?.(1, { query: "test-unsupported-ui-lang", ui_lang: "ruu" });
 
     const url = new URL(mockFetch.mock.calls[0][0] as string);
     expect(url.searchParams.has("ui_lang")).toBe(false);
