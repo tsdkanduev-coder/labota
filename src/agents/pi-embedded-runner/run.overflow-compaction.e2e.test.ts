@@ -63,6 +63,8 @@ vi.mock("../pi-embedded-helpers.js", async () => {
     isAuthAssistantError: vi.fn(() => false),
     isRateLimitAssistantError: vi.fn(() => false),
     isBillingAssistantError: vi.fn(() => false),
+    isOpenAIReasoningSequenceError: vi.fn(() => false),
+    extractOpenAIReasoningSequenceItemId: vi.fn(() => null),
     classifyFailoverReason: vi.fn(() => null),
     formatAssistantErrorText: vi.fn(() => ""),
     parseImageSizeError: vi.fn(() => null),
@@ -72,8 +74,17 @@ vi.mock("../pi-embedded-helpers.js", async () => {
   };
 });
 
+import {
+  extractOpenAIReasoningSequenceItemId,
+  isOpenAIReasoningSequenceError,
+} from "../pi-embedded-helpers.js";
 import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { log } from "./logger.js";
+import { resolveModel } from "./model.js";
+import {
+  resetSessionForReasoningRecovery,
+  scrubOpenAIReasoningSignaturesInSession,
+} from "./reasoning-recovery.js";
 import { runEmbeddedPiAgent } from "./run.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
@@ -84,10 +95,17 @@ import {
 
 const mockedRunEmbeddedAttempt = vi.mocked(runEmbeddedAttempt);
 const mockedCompactDirect = vi.mocked(compactEmbeddedPiSessionDirect);
+const mockedResolveModel = vi.mocked(resolveModel);
 const mockedSessionLikelyHasOversizedToolResults = vi.mocked(sessionLikelyHasOversizedToolResults);
 const mockedTruncateOversizedToolResultsInSession = vi.mocked(
   truncateOversizedToolResultsInSession,
 );
+const mockedIsOpenAIReasoningSequenceError = vi.mocked(isOpenAIReasoningSequenceError);
+const mockedExtractOpenAIReasoningSequenceItemId = vi.mocked(extractOpenAIReasoningSequenceItemId);
+const mockedScrubOpenAIReasoningSignaturesInSession = vi.mocked(
+  scrubOpenAIReasoningSignaturesInSession,
+);
+const mockedResetSessionForReasoningRecovery = vi.mocked(resetSessionForReasoningRecovery);
 
 const baseParams = {
   sessionId: "test-session",
@@ -108,6 +126,61 @@ describe("overflow compaction in run loop", () => {
       truncatedCount: 0,
       reason: "no oversized tool results",
     });
+    mockedIsOpenAIReasoningSequenceError.mockReturnValue(false);
+    mockedExtractOpenAIReasoningSequenceItemId.mockReturnValue(null);
+    mockedScrubOpenAIReasoningSignaturesInSession.mockResolvedValue({
+      recovered: false,
+      changedMessages: 0,
+      droppedMessages: 0,
+      reason: "no reasoning signatures matched",
+    });
+    mockedResetSessionForReasoningRecovery.mockResolvedValue({
+      reset: false,
+      reason: "not requested",
+    });
+  });
+
+  it("retries prompt after openai reasoning sequence recovery scrub succeeds", async () => {
+    const reasoningError = new Error(
+      "400 Item 'rs_test' of type 'reasoning' was provided without its required following item.",
+    );
+
+    mockedIsOpenAIReasoningSequenceError.mockReturnValue(true);
+    mockedExtractOpenAIReasoningSequenceItemId.mockReturnValue("rs_test");
+    mockedScrubOpenAIReasoningSignaturesInSession.mockResolvedValueOnce({
+      recovered: true,
+      changedMessages: 1,
+      droppedMessages: 0,
+    });
+
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: reasoningError }))
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    mockedResolveModel.mockReturnValueOnce({
+      model: {
+        id: "gpt-5.1",
+        provider: "openai",
+        contextWindow: 200000,
+        api: "openai-responses",
+      },
+      error: null,
+      authStorage: {
+        setRuntimeApiKey: vi.fn(),
+      },
+      modelRegistry: {},
+    });
+
+    const result = await runEmbeddedPiAgent({
+      ...baseParams,
+      provider: "openai",
+      model: "gpt-5.1",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedScrubOpenAIReasoningSignaturesInSession).toHaveBeenCalledTimes(1);
+    expect(mockedResetSessionForReasoningRecovery).not.toHaveBeenCalled();
+    expect(result.meta.error).toBeUndefined();
   });
 
   it("retries after successful compaction on context overflow promptError", async () => {

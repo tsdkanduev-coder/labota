@@ -35,6 +35,8 @@ export {
   isRateLimitErrorMessage,
   isTransientHttpError,
   isTimeoutErrorMessage,
+  isOpenAIReasoningSequenceError,
+  extractOpenAIReasoningSequenceItemId,
   parseImageDimensionError,
   parseImageSizeError,
 } from "./pi-embedded-helpers/errors.js";

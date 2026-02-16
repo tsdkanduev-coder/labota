@@ -104,6 +104,19 @@ vi.mock("./tool-result-truncation.js", () => ({
   sessionLikelyHasOversizedToolResults: vi.fn(() => false),
 }));
 
+vi.mock("./reasoning-recovery.js", () => ({
+  scrubOpenAIReasoningSignaturesInSession: vi.fn(async () => ({
+    recovered: false,
+    changedMessages: 0,
+    droppedMessages: 0,
+    reason: "no reasoning signatures matched",
+  })),
+  resetSessionForReasoningRecovery: vi.fn(async () => ({
+    reset: false,
+    reason: "recovery disabled in mock",
+  })),
+}));
+
 vi.mock("./utils.js", () => ({
   describeUnknownError: vi.fn((err: unknown) => {
     if (err instanceof Error) {

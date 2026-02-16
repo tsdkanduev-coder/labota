@@ -31,12 +31,14 @@ import {
   formatBillingErrorMessage,
   classifyFailoverReason,
   formatAssistantErrorText,
+  extractOpenAIReasoningSequenceItemId,
   isAuthAssistantError,
   isBillingAssistantError,
   isCompactionFailureError,
   isLikelyContextOverflowError,
   isFailoverAssistantError,
   isFailoverErrorMessage,
+  isOpenAIReasoningSequenceError,
   parseImageSizeError,
   parseImageDimensionError,
   isRateLimitAssistantError,
@@ -50,6 +52,10 @@ import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModel } from "./model.js";
+import {
+  resetSessionForReasoningRecovery,
+  scrubOpenAIReasoningSignaturesInSession,
+} from "./reasoning-recovery.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import {
@@ -414,6 +420,8 @@ export async function runEmbeddedPiAgent(
       const usageAccumulator = createUsageAccumulator();
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
+      let reasoningSignatureRecoveryAttempted = false;
+      let reasoningSessionResetAttempted = false;
       try {
         while (true) {
           attemptedThinking.add(thinkLevel);
@@ -692,6 +700,46 @@ export async function runEmbeddedPiAgent(
 
           if (promptError && !aborted) {
             const errorText = describeUnknownError(promptError);
+            if (
+              provider === "openai" &&
+              model.api === "openai-responses" &&
+              isOpenAIReasoningSequenceError(errorText)
+            ) {
+              const reasoningItemId = extractOpenAIReasoningSequenceItemId(errorText) ?? undefined;
+              if (!reasoningSignatureRecoveryAttempted) {
+                reasoningSignatureRecoveryAttempted = true;
+                const recovered = await scrubOpenAIReasoningSignaturesInSession({
+                  sessionFile: params.sessionFile,
+                  itemId: reasoningItemId,
+                  sessionId: params.sessionId,
+                  sessionKey: params.sessionKey,
+                });
+                if (recovered.recovered) {
+                  log.warn(
+                    `openai reasoning-sequence recovery: scrubbed signatures (item=${reasoningItemId ?? "any"}); retrying prompt`,
+                  );
+                  overflowCompactionAttempts = 0;
+                  toolResultTruncationAttempted = false;
+                  continue;
+                }
+              }
+              if (!reasoningSessionResetAttempted) {
+                reasoningSessionResetAttempted = true;
+                const reset = await resetSessionForReasoningRecovery({
+                  sessionFile: params.sessionFile,
+                  sessionId: params.sessionId,
+                  sessionKey: params.sessionKey,
+                });
+                if (reset.reset) {
+                  log.warn(
+                    "openai reasoning-sequence recovery: reset session history; retrying prompt",
+                  );
+                  overflowCompactionAttempts = 0;
+                  toolResultTruncationAttempted = false;
+                  continue;
+                }
+              }
+            }
             // Handle role ordering errors with a user-friendly message
             if (/incorrect role information|roles must alternate/i.test(errorText)) {
               return {

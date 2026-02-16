@@ -638,6 +638,8 @@ const TOOL_CALL_INPUT_MISSING_RE =
   /tool_(?:use|call)\.(?:input|arguments).*?(?:field required|required)/i;
 const TOOL_CALL_INPUT_PATH_RE =
   /messages\.\d+\.content\.\d+\.tool_(?:use|call)\.(?:input|arguments)/i;
+const OPENAI_REASONING_SEQUENCE_RE =
+  /item ['"](rs_[^'"\s]+)['"] of type ['"]reasoning(?:\.[^'"]*)?['"] was provided without (?:its|the) required following item/i;
 
 const IMAGE_DIMENSION_ERROR_RE =
   /image dimensions exceed max allowed size for many-image requests:\s*(\d+)\s*pixels/i;
@@ -686,6 +688,26 @@ export function isMissingToolCallInputError(raw: string): boolean {
     return false;
   }
   return TOOL_CALL_INPUT_MISSING_RE.test(raw) || TOOL_CALL_INPUT_PATH_RE.test(raw);
+}
+
+export function extractOpenAIReasoningSequenceItemId(raw: string): string | null {
+  if (!raw) {
+    return null;
+  }
+  const match = raw.match(OPENAI_REASONING_SEQUENCE_RE);
+  const id = match?.[1]?.trim();
+  return id?.startsWith("rs_") ? id : null;
+}
+
+export function isOpenAIReasoningSequenceError(raw: string): boolean {
+  if (!raw) {
+    return false;
+  }
+  if (OPENAI_REASONING_SEQUENCE_RE.test(raw)) {
+    return true;
+  }
+  const lower = raw.toLowerCase();
+  return lower.includes("type 'reasoning'") && lower.includes("required following item");
 }
 
 export function isBillingAssistantError(msg: AssistantMessage | undefined): boolean {
