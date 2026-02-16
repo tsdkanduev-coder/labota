@@ -85,7 +85,7 @@ function scrubAssistantReasoningSignatures(
     }
 
     changed = true;
-    const nextBlock = { ...(block as Record<string, unknown>) };
+    const nextBlock = { ...(block as unknown as Record<string, unknown>) };
     delete nextBlock.thinkingSignature;
     delete nextBlock.signature;
     const thinkingText = typeof nextBlock.thinking === "string" ? nextBlock.thinking.trim() : "";
@@ -95,7 +95,7 @@ function scrubAssistantReasoningSignatures(
     if (!thinkingText && !hasMeaningfulFields) {
       continue;
     }
-    nextContent.push(nextBlock as (typeof assistant.content)[number]);
+    nextContent.push(nextBlock as unknown as (typeof assistant.content)[number]);
   }
 
   if (!changed) {
@@ -137,8 +137,8 @@ function appendEntry(sessionManager: SessionManager, entry: Record<string, unkno
   if (type === "custom_message") {
     sessionManager.appendCustomMessageEntry(
       entry.customType as string,
-      entry.content as string,
-      entry.display as string | undefined,
+      entry.content as Parameters<typeof sessionManager.appendCustomMessageEntry>[1],
+      entry.display === true,
       entry.details as Record<string, unknown> | undefined,
     );
     return;
@@ -170,7 +170,7 @@ export async function scrubOpenAIReasoningSignaturesInSession(params: {
     const transformedMessages = new Map<number, AgentMessage | null>();
 
     for (let i = 0; i < branch.length; i++) {
-      const entry = branch[i] as Record<string, unknown>;
+      const entry = branch[i] as unknown as Record<string, unknown>;
       if (entry.type !== "message") {
         continue;
       }
@@ -208,7 +208,7 @@ export async function scrubOpenAIReasoningSignaturesInSession(params: {
     }
 
     for (let i = firstChangedIndex; i < branch.length; i++) {
-      const entry = branch[i] as Record<string, unknown>;
+      const entry = branch[i] as unknown as Record<string, unknown>;
       if (entry.type === "message") {
         const transformed = transformedMessages.get(i);
         if (transformed === null) {
