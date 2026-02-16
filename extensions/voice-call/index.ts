@@ -34,7 +34,7 @@ const voiceCallConfigSchema = {
   uiHints: {
     provider: {
       label: "Provider",
-      help: "Use twilio, telnyx, or mock for dev/no-network.",
+      help: "Use twilio, telnyx, plivo, voximplant, or mock for dev/no-network.",
     },
     fromNumber: { label: "From Number", placeholder: "+15550001234" },
     toNumber: { label: "Default To Number", placeholder: "+15550001234" },
@@ -46,6 +46,11 @@ const voiceCallConfigSchema = {
     "telnyx.publicKey": { label: "Telnyx Public Key", sensitive: true },
     "twilio.accountSid": { label: "Twilio Account SID" },
     "twilio.authToken": { label: "Twilio Auth Token", sensitive: true },
+    "voximplant.managementJwt": { label: "Voximplant Management JWT", sensitive: true },
+    "voximplant.ruleId": { label: "Voximplant Rule ID" },
+    "voximplant.apiBaseUrl": { label: "Voximplant API Base URL", advanced: true },
+    "voximplant.webhookSecret": { label: "Voximplant Webhook Secret", sensitive: true },
+    "voximplant.controlTimeoutMs": { label: "Voximplant Control Timeout (ms)", advanced: true },
     "outbound.defaultMode": { label: "Default Call Mode" },
     "outbound.notifyHangupDelaySec": {
       label: "Notify Hangup Delay (sec)",
@@ -143,7 +148,7 @@ const VoiceCallToolSchema = Type.Union([
 const voiceCallPlugin = {
   id: "voice-call",
   name: "Voice Call",
-  description: "Voice-call plugin with Telnyx/Twilio/Plivo providers",
+  description: "Voice-call plugin with Telnyx/Twilio/Plivo/Voximplant providers",
   configSchema: voiceCallConfigSchema,
   register(api: OpenClawPluginApi) {
     const config = resolveVoiceCallConfig(voiceCallConfigSchema.parse(api.pluginConfig));

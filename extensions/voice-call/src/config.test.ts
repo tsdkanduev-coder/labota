@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { validateProviderConfig, resolveVoiceCallConfig, type VoiceCallConfig } from "./config.js";
 
-function createBaseConfig(provider: "telnyx" | "twilio" | "plivo" | "mock"): VoiceCallConfig {
+function createBaseConfig(
+  provider: "telnyx" | "twilio" | "plivo" | "voximplant" | "mock",
+): VoiceCallConfig {
   return {
     enabled: true,
     provider,
@@ -50,6 +52,9 @@ describe("validateProviderConfig", () => {
     delete process.env.TELNYX_PUBLIC_KEY;
     delete process.env.PLIVO_AUTH_ID;
     delete process.env.PLIVO_AUTH_TOKEN;
+    delete process.env.VOXIMPLANT_MANAGEMENT_JWT;
+    delete process.env.VOXIMPLANT_RULE_ID;
+    delete process.env.VOXIMPLANT_WEBHOOK_SECRET;
   });
 
   afterEach(() => {
@@ -230,6 +235,76 @@ describe("validateProviderConfig", () => {
       expect(result.errors).toContain(
         "plugins.entries.voice-call.config.plivo.authId is required (or set PLIVO_AUTH_ID env)",
       );
+    });
+  });
+
+  describe("voximplant provider", () => {
+    it("passes validation when credentials are in config", () => {
+      const config = createBaseConfig("voximplant");
+      config.voximplant = {
+        managementJwt: "jwt",
+        ruleId: "12345",
+        webhookSecret: "secret",
+      };
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    it("passes validation when credentials are in environment variables", () => {
+      process.env.VOXIMPLANT_MANAGEMENT_JWT = "jwt";
+      process.env.VOXIMPLANT_RULE_ID = "12345";
+      process.env.VOXIMPLANT_WEBHOOK_SECRET = "secret";
+      let config = createBaseConfig("voximplant");
+      config = resolveVoiceCallConfig(config);
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    it("fails validation when managementJwt is missing everywhere", () => {
+      process.env.VOXIMPLANT_RULE_ID = "12345";
+      process.env.VOXIMPLANT_WEBHOOK_SECRET = "secret";
+      let config = createBaseConfig("voximplant");
+      config = resolveVoiceCallConfig(config);
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        "plugins.entries.voice-call.config.voximplant.managementJwt is required (or set VOXIMPLANT_MANAGEMENT_JWT env)",
+      );
+    });
+
+    it("fails validation when webhookSecret is missing and verification is enabled", () => {
+      process.env.VOXIMPLANT_MANAGEMENT_JWT = "jwt";
+      process.env.VOXIMPLANT_RULE_ID = "12345";
+      let config = createBaseConfig("voximplant");
+      config = resolveVoiceCallConfig(config);
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        "plugins.entries.voice-call.config.voximplant.webhookSecret is required (or set VOXIMPLANT_WEBHOOK_SECRET env)",
+      );
+    });
+
+    it("passes validation without webhookSecret when skipSignatureVerification is true", () => {
+      process.env.VOXIMPLANT_MANAGEMENT_JWT = "jwt";
+      process.env.VOXIMPLANT_RULE_ID = "12345";
+      let config = createBaseConfig("voximplant");
+      config.skipSignatureVerification = true;
+      config = resolveVoiceCallConfig(config);
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
     });
   });
 

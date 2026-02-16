@@ -183,11 +183,12 @@ export async function speakInitialMessage(
   ctx: ConversationContext,
   providerCallId: string,
 ): Promise<void> {
-  const call = getCallByProviderCallId({
-    activeCalls: ctx.activeCalls,
-    providerCallIdMap: ctx.providerCallIdMap,
-    providerCallId,
-  });
+  const call =
+    getCallByProviderCallId({
+      activeCalls: ctx.activeCalls,
+      providerCallIdMap: ctx.providerCallIdMap,
+      providerCallId,
+    }) || ctx.activeCalls.get(providerCallId);
   if (!call) {
     console.warn(`[voice-call] speakInitialMessage: no call found for ${providerCallId}`);
     return;

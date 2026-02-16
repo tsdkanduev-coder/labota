@@ -1,5 +1,5 @@
 ---
-summary: "Voice Call plugin: outbound + inbound calls via Twilio/Telnyx/Plivo (plugin install + config + CLI)"
+summary: "Voice Call plugin: outbound + inbound calls via Twilio/Telnyx/Plivo/Voximplant (plugin install + config + CLI)"
 read_when:
   - You want to place an outbound voice call from OpenClaw
   - You are configuring or developing the voice-call plugin
@@ -16,6 +16,7 @@ Current providers:
 - `twilio` (Programmable Voice + Media Streams)
 - `telnyx` (Call Control v2)
 - `plivo` (Voice API + XML transfer + GetInput speech)
+- `voximplant` (StartScenarios + VoxEngine webhook bridge)
 - `mock` (dev/no network)
 
 Quick mental model:
@@ -61,7 +62,7 @@ Set config under `plugins.entries.voice-call.config`:
       "voice-call": {
         enabled: true,
         config: {
-          provider: "twilio", // or "telnyx" | "plivo" | "mock"
+          provider: "twilio", // or "telnyx" | "plivo" | "voximplant" | "mock"
           fromNumber: "+15550001234",
           toNumber: "+15550005678",
 
@@ -81,6 +82,14 @@ Set config under `plugins.entries.voice-call.config`:
           plivo: {
             authId: "MAxxxxxxxxxxxxxxxxxxxx",
             authToken: "...",
+          },
+
+          voximplant: {
+            managementJwt: "eyJ...",
+            ruleId: "123456",
+            webhookSecret: "shared_secret",
+            // apiBaseUrl: "https://api.voximplant.com/platform_api",
+            // controlTimeoutMs: 10000,
           },
 
           // Webhook server
@@ -117,14 +126,64 @@ Set config under `plugins.entries.voice-call.config`:
 
 Notes:
 
-- Twilio/Telnyx require a **publicly reachable** webhook URL.
-- Plivo requires a **publicly reachable** webhook URL.
+- Twilio/Telnyx/Plivo/Voximplant require a **publicly reachable** webhook URL.
 - `mock` is a local dev provider (no network calls).
 - Telnyx requires `telnyx.publicKey` (or `TELNYX_PUBLIC_KEY`) unless `skipSignatureVerification` is true.
+- Voximplant requires `voximplant.webhookSecret` (or `VOXIMPLANT_WEBHOOK_SECRET`) unless `skipSignatureVerification` is true.
 - `skipSignatureVerification` is for local testing only.
 - If you use ngrok free tier, set `publicUrl` to the exact ngrok URL; signature verification is always enforced.
 - `tunnel.allowNgrokFreeTierLoopbackBypass: true` allows Twilio webhooks with invalid signatures **only** when `tunnel.provider="ngrok"` and `serve.bind` is loopback (ngrok local agent). Use for local dev only.
 - Ngrok free tier URLs can change or add interstitial behavior; if `publicUrl` drifts, Twilio signatures will fail. For production, prefer a stable domain or Tailscale funnel.
+
+## Voximplant scenario contract
+
+The Voximplant provider starts a scenario via `StartScenarios` and passes this data in `script_custom_data`:
+
+- `callId`
+- `from`
+- `to`
+- `webhookUrl`
+- `webhookSecret` (if configured in OpenClaw)
+- `streamUrl` (when `streaming.enabled=true`)
+
+Your VoxEngine scenario should:
+
+- place PSTN call (`callPSTN`) using your RU-enabled routing
+- bridge call audio to `streamUrl` over WebSocket (transport only)
+- send JSON callbacks to `webhookUrl`
+- include `x-openclaw-voximplant-secret` header with configured secret
+- include `media_session_access_secure_url` in callbacks for fallback controls (`hangup`, non-streaming fallback)
+
+With media streaming active, OpenClaw runs STT + LLM dialog + TTS; Voximplant is just telephony transport.
+
+## ElevenLabs Voice (for calls)
+
+Set core or plugin TTS to ElevenLabs and keep `streaming.enabled=true`:
+
+```json5
+{
+  messages: {
+    tts: {
+      provider: "elevenlabs",
+      elevenlabs: {
+        apiKey: "${ELEVENLABS_API_KEY}",
+        voiceId: "pNInz6obpgDQGcFmaJgB",
+        modelId: "eleven_multilingual_v2",
+      },
+    },
+  },
+  plugins: {
+    entries: {
+      "voice-call": {
+        config: {
+          provider: "voximplant",
+          streaming: { enabled: true, streamPath: "/voice/stream" },
+        },
+      },
+    },
+  },
+}
+```
 
 ## Webhook Security
 

@@ -3,7 +3,7 @@
   "uiHints": {
     "provider": {
       "label": "Provider",
-      "help": "Use twilio, telnyx, or mock for dev/no-network."
+      "help": "Use twilio, telnyx, plivo, voximplant, or mock for dev/no-network."
     },
     "fromNumber": {
       "label": "From Number",
@@ -40,6 +40,25 @@
     "twilio.authToken": {
       "label": "Twilio Auth Token",
       "sensitive": true
+    },
+    "voximplant.managementJwt": {
+      "label": "Voximplant Management JWT",
+      "sensitive": true
+    },
+    "voximplant.ruleId": {
+      "label": "Voximplant Rule ID"
+    },
+    "voximplant.apiBaseUrl": {
+      "label": "Voximplant API Base URL",
+      "advanced": true
+    },
+    "voximplant.webhookSecret": {
+      "label": "Voximplant Webhook Secret",
+      "sensitive": true
+    },
+    "voximplant.controlTimeoutMs": {
+      "label": "Voximplant Control Timeout (ms)",
+      "advanced": true
     },
     "outbound.defaultMode": {
       "label": "Default Call Mode"
@@ -168,7 +187,7 @@
       },
       "provider": {
         "type": "string",
-        "enum": ["telnyx", "twilio", "plivo", "mock"]
+        "enum": ["telnyx", "twilio", "plivo", "voximplant", "mock"]
       },
       "telnyx": {
         "type": "object",
@@ -206,6 +225,29 @@
           },
           "authToken": {
             "type": "string"
+          }
+        }
+      },
+      "voximplant": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "managementJwt": {
+            "type": "string"
+          },
+          "ruleId": {
+            "type": "string"
+          },
+          "apiBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "webhookSecret": {
+            "type": "string"
+          },
+          "controlTimeoutMs": {
+            "type": "integer",
+            "minimum": 1
           }
         }
       },

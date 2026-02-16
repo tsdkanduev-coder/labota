@@ -12,6 +12,7 @@ import type { CallManager } from "./manager.js";
 import type { MediaStreamConfig } from "./media-stream.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import type { TwilioProvider } from "./providers/twilio.js";
+import type { VoximplantProvider } from "./providers/voximplant.js";
 import type { NormalizedEvent, WebhookContext } from "./types.js";
 import { MediaStreamHandler } from "./media-stream.js";
 import { OpenAIRealtimeSTTProvider } from "./providers/stt-openai-realtime.js";
@@ -77,13 +78,20 @@ export class VoiceCallWebhookServer {
     const streamConfig: MediaStreamConfig = {
       sttProvider,
       shouldAcceptStream: ({ callId, token }) => {
-        const call = this.manager.getCallByProviderCallId(callId);
+        const call = this.manager.getCallByProviderCallId(callId) || this.manager.getCall(callId);
         if (!call) {
           return false;
         }
         if (this.provider.name === "twilio") {
           const twilio = this.provider as TwilioProvider;
           if (!twilio.isValidStreamToken(callId, token)) {
+            console.warn(`[voice-call] Rejecting media stream: invalid token for ${callId}`);
+            return false;
+          }
+        }
+        if (this.provider.name === "voximplant") {
+          const voximplant = this.provider as VoximplantProvider;
+          if (!voximplant.isValidStreamToken(callId, token)) {
             console.warn(`[voice-call] Rejecting media stream: invalid token for ${callId}`);
             return false;
           }
@@ -97,9 +105,14 @@ export class VoiceCallWebhookServer {
         if (this.provider.name === "twilio") {
           (this.provider as TwilioProvider).clearTtsQueue(providerCallId);
         }
+        if (this.provider.name === "voximplant") {
+          (this.provider as VoximplantProvider).clearTtsQueue(providerCallId);
+        }
 
         // Look up our internal call ID from the provider call ID
-        const call = this.manager.getCallByProviderCallId(providerCallId);
+        const call =
+          this.manager.getCallByProviderCallId(providerCallId) ||
+          this.manager.getCall(providerCallId);
         if (!call) {
           console.warn(`[voice-call] No active call found for provider ID: ${providerCallId}`);
           return;
@@ -130,6 +143,9 @@ export class VoiceCallWebhookServer {
         if (this.provider.name === "twilio") {
           (this.provider as TwilioProvider).clearTtsQueue(providerCallId);
         }
+        if (this.provider.name === "voximplant") {
+          (this.provider as VoximplantProvider).clearTtsQueue(providerCallId);
+        }
       },
       onPartialTranscript: (callId, partial) => {
         console.log(`[voice-call] Partial for ${callId}: ${partial}`);
@@ -139,6 +155,9 @@ export class VoiceCallWebhookServer {
         // Register stream with provider for TTS routing
         if (this.provider.name === "twilio") {
           (this.provider as TwilioProvider).registerCallStream(callId, streamSid);
+        }
+        if (this.provider.name === "voximplant") {
+          (this.provider as VoximplantProvider).registerCallStream(callId, streamSid);
         }
 
         // Speak initial message if one was provided when call was initiated
@@ -153,6 +172,9 @@ export class VoiceCallWebhookServer {
         console.log(`[voice-call] Media stream disconnected: ${callId}`);
         if (this.provider.name === "twilio") {
           (this.provider as TwilioProvider).unregisterCallStream(callId);
+        }
+        if (this.provider.name === "voximplant") {
+          (this.provider as VoximplantProvider).unregisterCallStream(callId);
         }
       },
     };

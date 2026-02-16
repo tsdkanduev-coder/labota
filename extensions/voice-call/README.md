@@ -7,6 +7,7 @@ Providers:
 - **Twilio** (Programmable Voice + Media Streams)
 - **Telnyx** (Call Control v2)
 - **Plivo** (Voice API + XML transfer + GetInput speech)
+- **Voximplant** (StartScenarios + VoxEngine webhook bridge)
 - **Mock** (dev/no network)
 
 Docs: `https://docs.openclaw.ai/plugins/voice-call`
@@ -36,7 +37,7 @@ Put under `plugins.entries.voice-call.config`:
 
 ```json5
 {
-  provider: "twilio", // or "telnyx" | "plivo" | "mock"
+  provider: "twilio", // or "telnyx" | "plivo" | "voximplant" | "mock"
   fromNumber: "+15550001234",
   toNumber: "+15550005678",
 
@@ -56,6 +57,14 @@ Put under `plugins.entries.voice-call.config`:
   plivo: {
     authId: "MAxxxxxxxxxxxxxxxxxxxx",
     authToken: "your_token",
+  },
+
+  voximplant: {
+    managementJwt: "eyJ...",
+    ruleId: "123456",
+    webhookSecret: "shared_secret",
+    // apiBaseUrl: "https://api.voximplant.com/platform_api",
+    // controlTimeoutMs: 10000,
   },
 
   // Webhook server
@@ -82,10 +91,51 @@ Put under `plugins.entries.voice-call.config`:
 
 Notes:
 
-- Twilio/Telnyx/Plivo require a **publicly reachable** webhook URL.
+- Twilio/Telnyx/Plivo/Voximplant require a **publicly reachable** webhook URL.
 - `mock` is a local dev provider (no network calls).
 - Telnyx requires `telnyx.publicKey` (or `TELNYX_PUBLIC_KEY`) unless `skipSignatureVerification` is true.
+- Voximplant requires `voximplant.webhookSecret` (or `VOXIMPLANT_WEBHOOK_SECRET`) unless `skipSignatureVerification` is true.
 - `tunnel.allowNgrokFreeTierLoopbackBypass: true` allows Twilio webhooks with invalid signatures **only** when `tunnel.provider="ngrok"` and `serve.bind` is loopback (ngrok local agent). Use for local dev only.
+
+## Voximplant scenario contract
+
+The provider starts a scenario through `StartScenarios` and passes this `script_custom_data`:
+
+- `callId` (OpenClaw internal call id)
+- `from` (caller id in E.164)
+- `to` (target phone in E.164)
+- `webhookUrl` (OpenClaw webhook URL)
+- `webhookSecret` (if configured in OpenClaw)
+- `streamUrl` (when `streaming.enabled=true`)
+
+Your VoxEngine scenario should:
+
+- call PSTN in your region (for RU routing)
+- bridge RTP audio to `streamUrl` over WebSocket (transport only)
+- send call lifecycle callbacks to `webhookUrl` as JSON
+- include header `x-openclaw-voximplant-secret: <voximplant.webhookSecret>`
+- return `media_session_access_secure_url` in callback payload for fallback controls (`hangup`, non-streaming fallback)
+
+When media streaming is active, OpenClaw handles STT + dialog + TTS. Voximplant only transports telephony.
+
+## ElevenLabs voice for calls
+
+Use core `messages.tts` (or plugin `tts` override) with provider `elevenlabs` and keep `streaming.enabled=true`:
+
+```json5
+{
+  messages: {
+    tts: {
+      provider: "elevenlabs",
+      elevenlabs: {
+        apiKey: "${ELEVENLABS_API_KEY}",
+        voiceId: "pNInz6obpgDQGcFmaJgB",
+        modelId: "eleven_multilingual_v2",
+      },
+    },
+  },
+}
+```
 
 ## TTS for calls
 

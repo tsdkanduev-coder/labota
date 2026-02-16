@@ -8,6 +8,7 @@ import { MockProvider } from "./providers/mock.js";
 import { PlivoProvider } from "./providers/plivo.js";
 import { TelnyxProvider } from "./providers/telnyx.js";
 import { TwilioProvider } from "./providers/twilio.js";
+import { VoximplantProvider } from "./providers/voximplant.js";
 import { createTelephonyTtsProvider } from "./telephony-tts.js";
 import { startTunnel, type TunnelResult } from "./tunnel.js";
 import {
@@ -85,6 +86,23 @@ function resolveProvider(config: VoiceCallConfig): VoiceCallProvider {
           webhookSecurity: config.webhookSecurity,
         },
       );
+    case "voximplant":
+      return new VoximplantProvider(
+        {
+          managementJwt: config.voximplant?.managementJwt,
+          ruleId: config.voximplant?.ruleId,
+          apiBaseUrl: config.voximplant?.apiBaseUrl,
+          webhookSecret: config.voximplant?.webhookSecret,
+          controlTimeoutMs: config.voximplant?.controlTimeoutMs,
+        },
+        {
+          skipVerification: config.skipSignatureVerification,
+          webhookSecret: config.voximplant?.webhookSecret,
+          controlTimeoutMs: config.voximplant?.controlTimeoutMs,
+          publicUrl: config.publicUrl,
+          streamPath: config.streaming?.enabled ? config.streaming.streamPath : undefined,
+        },
+      );
     case "mock":
       return new MockProvider();
     default:
@@ -160,8 +178,14 @@ export async function createVoiceCallRuntime(params: {
     (provider as TwilioProvider).setPublicUrl(publicUrl);
   }
 
-  if (provider.name === "twilio" && config.streaming?.enabled) {
-    const twilioProvider = provider as TwilioProvider;
+  if (publicUrl && provider.name === "voximplant") {
+    (provider as VoximplantProvider).setPublicUrl(publicUrl);
+  }
+
+  if ((provider.name === "twilio" || provider.name === "voximplant") && config.streaming?.enabled) {
+    const twilioProvider = provider.name === "twilio" ? (provider as TwilioProvider) : null;
+    const voximplantProvider =
+      provider.name === "voximplant" ? (provider as VoximplantProvider) : null;
     if (ttsRuntime?.textToSpeechTelephony) {
       try {
         const ttsProvider = createTelephonyTtsProvider({
@@ -169,7 +193,8 @@ export async function createVoiceCallRuntime(params: {
           ttsOverride: config.tts,
           runtime: ttsRuntime,
         });
-        twilioProvider.setTTSProvider(ttsProvider);
+        twilioProvider?.setTTSProvider(ttsProvider);
+        voximplantProvider?.setTTSProvider(ttsProvider);
         log.info("[voice-call] Telephony TTS provider configured");
       } catch (err) {
         log.warn(
@@ -184,7 +209,8 @@ export async function createVoiceCallRuntime(params: {
 
     const mediaHandler = webhookServer.getMediaStreamHandler();
     if (mediaHandler) {
-      twilioProvider.setMediaStreamHandler(mediaHandler);
+      twilioProvider?.setMediaStreamHandler(mediaHandler);
+      voximplantProvider?.setMediaStreamHandler(mediaHandler);
       log.info("[voice-call] Media stream handler wired to provider");
     }
   }

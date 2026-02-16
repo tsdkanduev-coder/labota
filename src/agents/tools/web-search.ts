@@ -23,6 +23,7 @@ const DEFAULT_SEARCH_COUNT = 5;
 const MAX_SEARCH_COUNT = 10;
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
+const BRAVE_RICH_ENDPOINT = "https://api.search.brave.com/res/v1/web/rich";
 const DEFAULT_PERPLEXITY_BASE_URL = "https://openrouter.ai/api/v1";
 const PERPLEXITY_DIRECT_BASE_URL = "https://api.perplexity.ai";
 const DEFAULT_PERPLEXITY_MODEL = "perplexity/sonar-pro";
@@ -146,6 +147,12 @@ type BraveSearchResult = {
 type BraveSearchResponse = {
   web?: {
     results?: BraveSearchResult[];
+  };
+  rich?: {
+    hint?: {
+      vertical?: string;
+      callback_key?: string;
+    };
   };
 };
 
@@ -522,6 +529,58 @@ function isValidIsoDate(value: string): boolean {
   );
 }
 
+function shouldAttemptBraveRichLookup(query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /(^|\W)(stock|stocks|share|shares|quote|quotes|ticker|price|market cap|crypto|cryptocurrency|forex|exchange rate|fx)(\W|$)/iu.test(
+      normalized,
+    ) || /(акци|котиров|тикер|курс\s*валют|крипт|цена\s*акц)/iu.test(normalized)
+  );
+}
+
+function readBraveRichHint(data: BraveSearchResponse): { callbackKey?: string; vertical?: string } {
+  const rich = data.rich;
+  if (!rich || typeof rich !== "object") {
+    return {};
+  }
+  const hint = rich.hint;
+  if (!hint || typeof hint !== "object") {
+    return {};
+  }
+  return {
+    callbackKey: typeof hint.callback_key === "string" ? hint.callback_key.trim() : undefined,
+    vertical: typeof hint.vertical === "string" ? hint.vertical.trim() : undefined,
+  };
+}
+
+async function runBraveRichLookup(params: {
+  callbackKey: string;
+  apiKey: string;
+  timeoutSeconds: number;
+}): Promise<Record<string, unknown> | undefined> {
+  const url = new URL(BRAVE_RICH_ENDPOINT);
+  url.searchParams.set("callback_key", params.callbackKey);
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "X-Subscription-Token": params.apiKey,
+    },
+    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+  });
+  if (!res.ok) {
+    return undefined;
+  }
+  const raw = (await res.json()) as unknown;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw as Record<string, unknown>;
+}
+
 function resolveSiteName(url: string | undefined): string | undefined {
   if (!url) {
     return undefined;
@@ -643,6 +702,7 @@ async function runWebSearch(params: {
   timeoutSeconds: number;
   cacheTtlMs: number;
   provider: (typeof SEARCH_PROVIDERS)[number];
+  enableBraveRichCallback?: boolean;
   country?: string;
   search_lang?: string;
   ui_lang?: string;
@@ -654,7 +714,7 @@ async function runWebSearch(params: {
 }): Promise<Record<string, unknown>> {
   const cacheKey = normalizeCacheKey(
     params.provider === "brave"
-      ? `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}`
+      ? `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}:${params.enableBraveRichCallback ? "rich" : "plain"}`
       : params.provider === "perplexity"
         ? `${params.provider}:${params.query}:${params.perplexityBaseUrl ?? DEFAULT_PERPLEXITY_BASE_URL}:${params.perplexityModel ?? DEFAULT_PERPLEXITY_MODEL}:${params.freshness || "default"}`
         : `${params.provider}:${params.query}:${params.grokModel ?? DEFAULT_GROK_MODEL}:${String(params.grokInlineCitations ?? false)}`,
@@ -741,6 +801,9 @@ async function runWebSearch(params: {
   if (params.freshness) {
     url.searchParams.set("freshness", params.freshness);
   }
+  if (params.enableBraveRichCallback) {
+    url.searchParams.set("enable_rich_callback", "1");
+  }
 
   const res = await fetch(url.toString(), {
     method: "GET",
@@ -758,6 +821,15 @@ async function runWebSearch(params: {
 
   const data = (await res.json()) as BraveSearchResponse;
   const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
+  const richHint = params.enableBraveRichCallback ? readBraveRichHint(data) : {};
+  const rich =
+    richHint.callbackKey && params.enableBraveRichCallback
+      ? await runBraveRichLookup({
+          callbackKey: richHint.callbackKey,
+          apiKey: params.apiKey,
+          timeoutSeconds: params.timeoutSeconds,
+        })
+      : undefined;
   const mapped = results.map((entry) => {
     const description = entry.description ?? "";
     const title = entry.title ?? "";
@@ -784,6 +856,8 @@ async function runWebSearch(params: {
       wrapped: true,
     },
     results: mapped,
+    richVertical: richHint.vertical || undefined,
+    rich: rich || undefined,
   };
   writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
   return payload;
@@ -807,7 +881,7 @@ export function createWebSearchTool(options?: {
       ? "Search the web using Perplexity Sonar (direct or via OpenRouter). Returns AI-synthesized answers with citations from real-time web search."
       : provider === "grok"
         ? "Search the web using xAI Grok. Returns AI-synthesized answers with citations from real-time web search."
-        : "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and snippets for fast research.";
+        : "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, snippets, and when available rich callback data (for example stocks/weather/sports).";
 
   return {
     label: "Web Search",
@@ -829,6 +903,7 @@ export function createWebSearchTool(options?: {
       }
       const params = args as Record<string, unknown>;
       const query = readStringParam(params, "query", { required: true });
+      const enableBraveRichCallback = provider === "brave" && shouldAttemptBraveRichLookup(query);
       const count =
         readNumberParam(params, "count", { integer: true }) ?? search?.maxResults ?? undefined;
       const country = readStringParam(params, "country");
@@ -859,6 +934,7 @@ export function createWebSearchTool(options?: {
         timeoutSeconds: resolveTimeoutSeconds(search?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS),
         cacheTtlMs: resolveCacheTtlMs(search?.cacheTtlMinutes, DEFAULT_CACHE_TTL_MINUTES),
         provider,
+        enableBraveRichCallback,
         country,
         search_lang,
         ui_lang,

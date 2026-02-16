@@ -68,6 +68,22 @@ export const PlivoConfigSchema = z
   .strict();
 export type PlivoConfig = z.infer<typeof PlivoConfigSchema>;
 
+export const VoximplantConfigSchema = z
+  .object({
+    /** Voximplant Management API JWT token */
+    managementJwt: z.string().min(1).optional(),
+    /** Voximplant scenario rule ID for StartScenarios */
+    ruleId: z.string().min(1).optional(),
+    /** Voximplant Platform API base URL */
+    apiBaseUrl: z.string().url().default("https://api.voximplant.com/platform_api"),
+    /** Shared secret expected from scenario webhook callbacks */
+    webhookSecret: z.string().min(1).optional(),
+    /** Timeout for control URL commands in milliseconds */
+    controlTimeoutMs: z.number().int().positive().default(10000),
+  })
+  .strict();
+export type VoximplantConfig = z.infer<typeof VoximplantConfigSchema>;
+
 // -----------------------------------------------------------------------------
 // STT/TTS Configuration
 // -----------------------------------------------------------------------------
@@ -240,8 +256,8 @@ export const VoiceCallConfigSchema = z
     /** Enable voice call functionality */
     enabled: z.boolean().default(false),
 
-    /** Active provider (telnyx, twilio, plivo, or mock) */
-    provider: z.enum(["telnyx", "twilio", "plivo", "mock"]).optional(),
+    /** Active provider (telnyx, twilio, plivo, voximplant, or mock) */
+    provider: z.enum(["telnyx", "twilio", "plivo", "voximplant", "mock"]).optional(),
 
     /** Telnyx-specific configuration */
     telnyx: TelnyxConfigSchema.optional(),
@@ -251,6 +267,9 @@ export const VoiceCallConfigSchema = z
 
     /** Plivo-specific configuration */
     plivo: PlivoConfigSchema.optional(),
+
+    /** Voximplant-specific configuration */
+    voximplant: VoximplantConfigSchema.optional(),
 
     /** Phone number to call from (E.164) */
     fromNumber: E164Schema.optional(),
@@ -361,6 +380,30 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
     resolved.plivo.authToken = resolved.plivo.authToken ?? process.env.PLIVO_AUTH_TOKEN;
   }
 
+  // Voximplant
+  if (resolved.provider === "voximplant") {
+    resolved.voximplant = resolved.voximplant ?? {};
+    resolved.voximplant.managementJwt =
+      resolved.voximplant.managementJwt ?? process.env.VOXIMPLANT_MANAGEMENT_JWT;
+    resolved.voximplant.ruleId = resolved.voximplant.ruleId ?? process.env.VOXIMPLANT_RULE_ID;
+    resolved.voximplant.apiBaseUrl =
+      resolved.voximplant.apiBaseUrl ??
+      process.env.VOXIMPLANT_API_BASE_URL ??
+      "https://api.voximplant.com/platform_api";
+    resolved.voximplant.webhookSecret =
+      resolved.voximplant.webhookSecret ?? process.env.VOXIMPLANT_WEBHOOK_SECRET;
+    const controlTimeoutRaw = process.env.VOXIMPLANT_CONTROL_TIMEOUT_MS;
+    const parsedControlTimeout = controlTimeoutRaw
+      ? Number.parseInt(controlTimeoutRaw, 10)
+      : Number.NaN;
+    const envControlTimeout =
+      Number.isFinite(parsedControlTimeout) && parsedControlTimeout > 0
+        ? parsedControlTimeout
+        : undefined;
+    resolved.voximplant.controlTimeoutMs =
+      resolved.voximplant.controlTimeoutMs ?? envControlTimeout ?? 10000;
+  }
+
   // Tunnel Config
   resolved.tunnel = resolved.tunnel ?? {
     provider: "none",
@@ -446,6 +489,24 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     if (!config.plivo?.authToken) {
       errors.push(
         "plugins.entries.voice-call.config.plivo.authToken is required (or set PLIVO_AUTH_TOKEN env)",
+      );
+    }
+  }
+
+  if (config.provider === "voximplant") {
+    if (!config.voximplant?.managementJwt) {
+      errors.push(
+        "plugins.entries.voice-call.config.voximplant.managementJwt is required (or set VOXIMPLANT_MANAGEMENT_JWT env)",
+      );
+    }
+    if (!config.voximplant?.ruleId) {
+      errors.push(
+        "plugins.entries.voice-call.config.voximplant.ruleId is required (or set VOXIMPLANT_RULE_ID env)",
+      );
+    }
+    if (!config.skipSignatureVerification && !config.voximplant?.webhookSecret) {
+      errors.push(
+        "plugins.entries.voice-call.config.voximplant.webhookSecret is required (or set VOXIMPLANT_WEBHOOK_SECRET env)",
       );
     }
   }

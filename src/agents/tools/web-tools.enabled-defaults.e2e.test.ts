@@ -155,6 +155,65 @@ describe("web_search country and language parameters", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(result?.details).toMatchObject({ error: "invalid_freshness" });
   });
+
+  it("enables Brave rich callback lookup for stock-like queries", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            web: { results: [] },
+            rich: { hint: { vertical: "stock", callback_key: "cb-stock-1" } },
+          }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            type: "rich",
+            subtype: "stock",
+            symbol: "CIAN",
+            price: 595.12,
+            currency: "RUB",
+          }),
+      } as Response);
+    // @ts-expect-error mock fetch
+    global.fetch = mockFetch;
+
+    const tool = createWebSearchTool({ config: undefined, sandboxed: true });
+    const result = await tool?.execute?.(1, { query: "Сколько стоят акции циан" });
+    const details = result?.details as { richVertical?: string; rich?: Record<string, unknown> };
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const webUrl = new URL(mockFetch.mock.calls[0][0] as string);
+    expect(webUrl.searchParams.get("enable_rich_callback")).toBe("1");
+
+    const richUrl = new URL(mockFetch.mock.calls[1][0] as string);
+    expect(richUrl.pathname).toBe("/res/v1/web/rich");
+    expect(richUrl.searchParams.get("callback_key")).toBe("cb-stock-1");
+
+    expect(details.richVertical).toBe("stock");
+    expect((details.rich as { subtype?: string } | undefined)?.subtype).toBe("stock");
+  });
+
+  it("does not enable Brave rich callback for generic queries", async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ web: { results: [] } }),
+      } as Response),
+    );
+    // @ts-expect-error mock fetch
+    global.fetch = mockFetch;
+
+    const tool = createWebSearchTool({ config: undefined, sandboxed: true });
+    await tool?.execute?.(1, { query: "test generic query" });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const webUrl = new URL(mockFetch.mock.calls[0][0] as string);
+    expect(webUrl.searchParams.has("enable_rich_callback")).toBe(false);
+  });
 });
 
 describe("web_search perplexity baseUrl defaults", () => {
