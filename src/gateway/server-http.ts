@@ -1,13 +1,18 @@
+import type { Duplex } from "node:stream";
 import type { TlsOptions } from "node:tls";
 import type { WebSocketServer } from "ws";
 import {
   createServer as createHttpServer,
+  request as createHttpRequest,
+  type IncomingHttpHeaders,
   type Server as HttpServer,
   type IncomingMessage,
+  type OutgoingHttpHeaders,
   type ServerResponse,
 } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
+import type { OpenClawConfig } from "../config/config.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
@@ -62,6 +67,19 @@ type HookAuthFailure = { count: number; windowStartedAtMs: number };
 const HOOK_AUTH_FAILURE_LIMIT = 20;
 const HOOK_AUTH_FAILURE_WINDOW_MS = 60_000;
 const HOOK_AUTH_FAILURE_TRACK_MAX = 2048;
+const VOICE_CALL_DEFAULT_BIND = "127.0.0.1";
+const VOICE_CALL_DEFAULT_PORT = 3334;
+const VOICE_CALL_DEFAULT_WEBHOOK_PATH = "/voice/webhook";
+const VOICE_CALL_DEFAULT_STREAM_PATH = "/voice/stream";
+const VOICE_CALL_PROXY_TIMEOUT_MS = 30_000;
+
+type VoiceCallProxyTarget = {
+  host: string;
+  port: number;
+  webhookPath: string;
+  streamPath: string;
+  streamEnabled: boolean;
+};
 
 type HookDispatchers = {
   dispatchWakeHook: (value: { text: string; mode: "now" | "next-heartbeat" }) => void;
@@ -95,6 +113,233 @@ function isCanvasPath(pathname: string): boolean {
     pathname.startsWith(`${CANVAS_HOST_PATH}/`) ||
     pathname === CANVAS_WS_PATH
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readPositiveInt(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function normalizePath(path: string | undefined, fallback: string): string {
+  const raw = (path ?? fallback).trim();
+  const withLeadingSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  if (withLeadingSlash.length > 1 && withLeadingSlash.endsWith("/")) {
+    return withLeadingSlash.slice(0, -1);
+  }
+  return withLeadingSlash;
+}
+
+function pathMatchesPrefix(pathname: string, basePath: string): boolean {
+  return pathname === basePath || pathname.startsWith(`${basePath}/`);
+}
+
+function resolveVoiceCallProxyTarget(configSnapshot: OpenClawConfig): VoiceCallProxyTarget | null {
+  const plugins = asRecord(configSnapshot.plugins);
+  const entries = asRecord(plugins?.entries);
+  const voiceCallEntry = asRecord(entries?.["voice-call"]);
+  if (!voiceCallEntry) {
+    return null;
+  }
+  if (voiceCallEntry.enabled === false) {
+    return null;
+  }
+  const voiceCallConfig = asRecord(voiceCallEntry.config);
+  if (!voiceCallConfig) {
+    return null;
+  }
+
+  const serve = asRecord(voiceCallConfig.serve);
+  const streaming = asRecord(voiceCallConfig.streaming);
+
+  return {
+    host: readString(serve?.bind) ?? VOICE_CALL_DEFAULT_BIND,
+    port: readPositiveInt(serve?.port, VOICE_CALL_DEFAULT_PORT),
+    webhookPath: normalizePath(readString(serve?.path), VOICE_CALL_DEFAULT_WEBHOOK_PATH),
+    streamPath: normalizePath(readString(streaming?.streamPath), VOICE_CALL_DEFAULT_STREAM_PATH),
+    streamEnabled: streaming?.enabled === true,
+  };
+}
+
+async function proxyVoiceCallHttpRequest(params: {
+  req: IncomingMessage;
+  res: ServerResponse;
+  target: VoiceCallProxyTarget;
+}): Promise<void> {
+  const { req, res, target } = params;
+  const headers: OutgoingHttpHeaders = {
+    ...req.headers,
+    host: `${target.host}:${target.port}`,
+  };
+
+  await new Promise<void>((resolve) => {
+    const upstreamReq = createHttpRequest(
+      {
+        protocol: "http:",
+        host: target.host,
+        port: target.port,
+        method: req.method ?? "GET",
+        path: req.url ?? target.webhookPath,
+        headers,
+      },
+      (upstreamRes) => {
+        res.statusCode = upstreamRes.statusCode ?? 502;
+        for (const [name, value] of Object.entries(upstreamRes.headers)) {
+          if (value !== undefined) {
+            res.setHeader(name, value);
+          }
+        }
+        upstreamRes.pipe(res);
+        upstreamRes.on("end", resolve);
+        upstreamRes.on("error", () => {
+          if (!res.headersSent) {
+            res.statusCode = 502;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end("Bad Gateway");
+          }
+          resolve();
+        });
+      },
+    );
+
+    upstreamReq.setTimeout(VOICE_CALL_PROXY_TIMEOUT_MS, () => {
+      upstreamReq.destroy(new Error("voice-call upstream timeout"));
+    });
+    upstreamReq.on("error", () => {
+      if (!res.headersSent) {
+        res.statusCode = 502;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end("Bad Gateway");
+      }
+      resolve();
+    });
+    req.on("aborted", () => {
+      upstreamReq.destroy();
+      resolve();
+    });
+    req.pipe(upstreamReq);
+  });
+}
+
+function writeHttpResponseToSocket(params: {
+  socket: Duplex;
+  statusCode: number;
+  statusMessage: string;
+  headers?: IncomingHttpHeaders;
+}): void {
+  const { socket, statusCode, statusMessage, headers } = params;
+  const lines = [`HTTP/1.1 ${statusCode} ${statusMessage}`];
+  if (headers) {
+    for (const [name, value] of Object.entries(headers)) {
+      if (value === undefined) {
+        continue;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          lines.push(`${name}: ${item}`);
+        }
+      } else {
+        lines.push(`${name}: ${value}`);
+      }
+    }
+  }
+  lines.push("Connection: close", "", "");
+  socket.write(lines.join("\r\n"));
+}
+
+function proxyVoiceCallWsUpgrade(params: {
+  req: IncomingMessage;
+  socket: Duplex;
+  head: Buffer;
+  target: VoiceCallProxyTarget;
+}): void {
+  const { req, socket, head, target } = params;
+  const headers: OutgoingHttpHeaders = {
+    ...req.headers,
+    host: `${target.host}:${target.port}`,
+  };
+  const upstreamReq = createHttpRequest({
+    protocol: "http:",
+    host: target.host,
+    port: target.port,
+    method: req.method ?? "GET",
+    path: req.url ?? target.streamPath,
+    headers,
+  });
+
+  upstreamReq.setTimeout(VOICE_CALL_PROXY_TIMEOUT_MS, () => {
+    upstreamReq.destroy(new Error("voice-call websocket upstream timeout"));
+  });
+
+  upstreamReq.on("upgrade", (upstreamRes, upstreamSocket, upstreamHead) => {
+    const statusCode = upstreamRes.statusCode ?? 101;
+    const statusMessage = upstreamRes.statusMessage ?? "Switching Protocols";
+    const rawHeaderLines: string[] = [];
+    const rawHeaders = upstreamRes.rawHeaders;
+    for (let i = 0; i < rawHeaders.length; i += 2) {
+      rawHeaderLines.push(`${rawHeaders[i]}: ${rawHeaders[i + 1] ?? ""}`);
+    }
+    socket.write(
+      [`HTTP/1.1 ${statusCode} ${statusMessage}`, ...rawHeaderLines, "", ""].join("\r\n"),
+    );
+    if (head.length > 0) {
+      upstreamSocket.write(head);
+    }
+    if (upstreamHead.length > 0) {
+      socket.write(upstreamHead);
+    }
+    upstreamSocket.on("error", () => socket.destroy());
+    socket.on("error", () => upstreamSocket.destroy());
+    upstreamSocket.pipe(socket);
+    socket.pipe(upstreamSocket);
+  });
+
+  upstreamReq.on("response", (upstreamRes) => {
+    writeHttpResponseToSocket({
+      socket,
+      statusCode: upstreamRes.statusCode ?? 502,
+      statusMessage: upstreamRes.statusMessage ?? "Bad Gateway",
+      headers: upstreamRes.headers,
+    });
+    upstreamRes.resume();
+    upstreamRes.on("end", () => socket.destroy());
+  });
+
+  upstreamReq.on("error", () => {
+    writeHttpResponseToSocket({
+      socket,
+      statusCode: 502,
+      statusMessage: "Bad Gateway",
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+      },
+    });
+    socket.destroy();
+  });
+
+  upstreamReq.end();
 }
 
 function hasAuthorizedWsClientForIp(clients: Set<GatewayWsClient>, clientIp: string): boolean {
@@ -483,6 +728,15 @@ export function createGatewayHttpServer(opts: {
       const configSnapshot = loadConfig();
       const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
       const requestPath = new URL(req.url ?? "/", "http://localhost").pathname;
+      const voiceCallTarget = resolveVoiceCallProxyTarget(configSnapshot);
+      if (voiceCallTarget && pathMatchesPrefix(requestPath, voiceCallTarget.webhookPath)) {
+        await proxyVoiceCallHttpRequest({
+          req,
+          res,
+          target: voiceCallTarget,
+        });
+        return;
+      }
       if (await handleHooksRequest(req, res)) {
         return;
       }
@@ -609,10 +863,24 @@ export function attachGatewayUpgradeHandler(opts: {
   const { httpServer, wss, canvasHost, clients, resolvedAuth, rateLimiter } = opts;
   httpServer.on("upgrade", (req, socket, head) => {
     void (async () => {
+      const configSnapshot = loadConfig();
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const voiceCallTarget = resolveVoiceCallProxyTarget(configSnapshot);
+      if (
+        voiceCallTarget &&
+        voiceCallTarget.streamEnabled &&
+        url.pathname === voiceCallTarget.streamPath
+      ) {
+        proxyVoiceCallWsUpgrade({
+          req,
+          socket,
+          head,
+          target: voiceCallTarget,
+        });
+        return;
+      }
       if (canvasHost) {
-        const url = new URL(req.url ?? "/", "http://localhost");
         if (url.pathname === CANVAS_WS_PATH) {
-          const configSnapshot = loadConfig();
           const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
           const ok = await authorizeCanvasRequest({
             req,
