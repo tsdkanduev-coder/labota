@@ -77,6 +77,29 @@ export class VoiceCallWebhookServer {
 
     const streamConfig: MediaStreamConfig = {
       sttProvider,
+      resolveCallIdByToken: (token) => {
+        if (!token) {
+          return undefined;
+        }
+        for (const call of this.manager.getActiveCalls()) {
+          const keys = [call.callId, call.providerCallId].filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          );
+          if (this.provider.name === "twilio") {
+            const twilio = this.provider as TwilioProvider;
+            if (keys.some((key) => twilio.isValidStreamToken(key, token))) {
+              return call.callId;
+            }
+          }
+          if (this.provider.name === "voximplant") {
+            const voximplant = this.provider as VoximplantProvider;
+            if (keys.some((key) => voximplant.isValidStreamToken(key, token))) {
+              return call.callId;
+            }
+          }
+        }
+        return undefined;
+      },
       shouldAcceptStream: ({ callId, token }) => {
         const call = this.manager.getCallByProviderCallId(callId) || this.manager.getCall(callId);
         if (!call) {

@@ -137,4 +137,44 @@ describe("MediaStreamHandler call identity", () => {
     expect(closeSpy).not.toHaveBeenCalled();
     expect(onConnect).toHaveBeenCalledWith("call-123", "stream-1");
   });
+
+  it("resolves call ID from stream token when start payload has no call identifiers", async () => {
+    const onConnect = vi.fn();
+    const handler = new MediaStreamHandler({
+      sttProvider: createStubSttProvider(),
+      resolveCallIdByToken: (token) => (token === "token-xyz" ? "call-xyz" : undefined),
+      shouldAcceptStream: ({ callId, token }) => callId === "call-xyz" && token === "token-xyz",
+      onConnect,
+    });
+
+    type HandleStart = (
+      ws: { close: (code?: number, reason?: string) => void },
+      message: unknown,
+      streamToken?: string,
+    ) => Promise<{ callId: string } | null>;
+    const handleStart = (handler as unknown as { handleStart: HandleStart }).handleStart.bind(
+      handler,
+    );
+
+    const closeSpy = vi.fn();
+    const session = await handleStart(
+      { close: closeSpy },
+      {
+        event: "start",
+        streamSid: "stream-2",
+        start: {
+          streamSid: "stream-2",
+          accountSid: "account",
+          tracks: ["inbound"],
+          customParameters: {},
+          mediaFormat: { encoding: "audio/x-mulaw", sampleRate: 8000, channels: 1 },
+        },
+      },
+      "token-xyz",
+    );
+
+    expect(session?.callId).toBe("call-xyz");
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onConnect).toHaveBeenCalledWith("call-xyz", "stream-2");
+  });
 });

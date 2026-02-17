@@ -21,6 +21,11 @@ import type {
 export interface MediaStreamConfig {
   /** STT provider for transcription */
   sttProvider: OpenAIRealtimeSTTProvider;
+  /**
+   * Resolve call ID from a stream auth token when provider "start" payload
+   * does not include call identifiers.
+   */
+  resolveCallIdByToken?: (token: string) => string | undefined;
   /** Validate whether to accept a media stream for the given call ID */
   shouldAcceptStream?: (params: { callId: string; streamSid: string; token?: string }) => boolean;
   /** Callback when transcript is received */
@@ -144,12 +149,19 @@ export class MediaStreamHandler {
     streamToken?: string,
   ): Promise<StreamSession | null> {
     const streamSid = message.streamSid || message.start?.streamSid || "";
-    const callId = this.extractCallId(message);
+    let callId = this.extractCallId(message);
 
     // Prefer token from start message customParameters (set via TwiML <Parameter>),
     // falling back to query string token. Twilio strips query params from WebSocket
     // URLs but reliably delivers <Parameter> values in customParameters.
     const effectiveToken = message.start?.customParameters?.token ?? streamToken;
+
+    if (!callId && effectiveToken && this.config.resolveCallIdByToken) {
+      const resolvedCallId = this.config.resolveCallIdByToken(effectiveToken);
+      if (resolvedCallId) {
+        callId = resolvedCallId;
+      }
+    }
 
     console.log(`[MediaStream] Stream started: ${streamSid} (call: ${callId})`);
     if (!callId) {
