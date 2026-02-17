@@ -286,6 +286,25 @@ describe("validateProviderConfig", () => {
       expect(result.errors).toEqual([]);
     });
 
+    it("treats VOXIMPLANT_MANAGEMENT_JWT=AUTO as service-account mode", () => {
+      process.env.VOXIMPLANT_MANAGEMENT_JWT = "AUTO";
+      process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID = "10277772";
+      process.env.VOXIMPLANT_MANAGEMENT_KEY_ID = "key-id";
+      process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY =
+        "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----";
+      process.env.VOXIMPLANT_RULE_ID = "12345";
+      process.env.VOXIMPLANT_WEBHOOK_SECRET = "secret";
+      let config = createBaseConfig("voximplant");
+      config = resolveVoiceCallConfig(config);
+
+      expect(config.voximplant?.managementJwt).toBeUndefined();
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
     it("fails validation when Voximplant auth is missing everywhere", () => {
       process.env.VOXIMPLANT_RULE_ID = "12345";
       process.env.VOXIMPLANT_WEBHOOK_SECRET = "secret";

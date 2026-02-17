@@ -359,6 +359,22 @@ export type VoiceCallConfig = z.infer<typeof VoiceCallConfigSchema>;
 // Configuration Helpers
 // -----------------------------------------------------------------------------
 
+const VOXIMPLANT_MANAGEMENT_JWT_SENTINELS = new Set(["AUTO", "__AUTO__", "__SERVICE_ACCOUNT__"]);
+
+function normalizeVoximplantManagementJwt(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (VOXIMPLANT_MANAGEMENT_JWT_SENTINELS.has(trimmed)) {
+    return undefined;
+  }
+  if (/^\$\{[A-Z_][A-Z0-9_]*\}$/.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+}
+
 /**
  * Resolves the configuration by merging environment variables into missing fields.
  * Returns a new configuration object with environment variables applied.
@@ -393,6 +409,9 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
     resolved.voximplant = resolved.voximplant ?? {};
     resolved.voximplant.managementJwt =
       resolved.voximplant.managementJwt ?? process.env.VOXIMPLANT_MANAGEMENT_JWT;
+    resolved.voximplant.managementJwt = normalizeVoximplantManagementJwt(
+      resolved.voximplant.managementJwt,
+    );
     resolved.voximplant.managementAccountId =
       resolved.voximplant.managementAccountId ?? process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID;
     resolved.voximplant.managementKeyId =
@@ -528,7 +547,7 @@ export function validateProviderConfig(config: VoiceCallConfig): {
   }
 
   if (config.provider === "voximplant") {
-    const managementJwt = config.voximplant?.managementJwt?.trim();
+    const managementJwt = normalizeVoximplantManagementJwt(config.voximplant?.managementJwt);
     const managementAccountId = config.voximplant?.managementAccountId?.trim();
     const managementKeyId = config.voximplant?.managementKeyId?.trim();
     const managementPrivateKey = config.voximplant?.managementPrivateKey?.trim();

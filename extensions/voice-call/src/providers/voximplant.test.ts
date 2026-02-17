@@ -296,4 +296,60 @@ describe("VoximplantProvider", () => {
     expect(initiated.providerCallId).toBe("history-1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores managementJwt AUTO sentinel and uses service-account JWT", async () => {
+    const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const rawHeaders = init?.headers;
+      let authHeader = "";
+      if (rawHeaders instanceof Headers) {
+        authHeader = rawHeaders.get("Authorization") ?? "";
+      } else if (Array.isArray(rawHeaders)) {
+        const pair = rawHeaders.find(([key]) => key.toLowerCase() === "authorization");
+        authHeader = pair?.[1] ?? "";
+      } else if (rawHeaders && typeof rawHeaders === "object") {
+        const map = rawHeaders as Record<string, string>;
+        authHeader = map.Authorization ?? map.authorization ?? "";
+      }
+
+      expect(authHeader).not.toBe("Bearer AUTO");
+      expect(authHeader.startsWith("Bearer ")).toBe(true);
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            result: {
+              call_session_history_id: "history-auto",
+            },
+          }),
+      } as Response;
+    });
+
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new VoximplantProvider({
+      managementJwt: "AUTO",
+      managementAccountId: "10277772",
+      managementKeyId: "key-1",
+      managementPrivateKey: privateKeyPem,
+      ruleId: "rule-1",
+      webhookSecret: "secret",
+      apiBaseUrl: "https://api.voximplant.com/platform_api",
+      controlTimeoutMs: 1000,
+    });
+
+    const initiated = await provider.initiateCall({
+      callId: "call-auto",
+      from: "+79990001122",
+      to: "+79990003344",
+      webhookUrl: "https://openclaw.example/voice/webhook",
+    });
+
+    expect(initiated.providerCallId).toBe("history-auto");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

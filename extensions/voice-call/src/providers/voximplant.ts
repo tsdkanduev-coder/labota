@@ -39,6 +39,22 @@ type VoximplantServiceAccount = {
   privateKey: string;
 };
 
+const VOXIMPLANT_MANAGEMENT_JWT_SENTINELS = new Set(["AUTO", "__AUTO__", "__SERVICE_ACCOUNT__"]);
+
+function normalizeManagementJwtCandidate(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (VOXIMPLANT_MANAGEMENT_JWT_SENTINELS.has(trimmed)) {
+    return null;
+  }
+  if (/^\$\{[A-Z_][A-Z0-9_]*\}$/.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
 /**
  * Voximplant provider using:
  * - Management API StartScenarios for outbound call bootstrap
@@ -66,7 +82,7 @@ export class VoximplantProvider implements VoiceCallProvider {
   private streamAuthTokens = new Map<string, string>();
 
   constructor(config: VoximplantConfig, options: VoximplantProviderOptions = {}) {
-    const managementJwt = config.managementJwt?.trim() || null;
+    const managementJwt = normalizeManagementJwtCandidate(config.managementJwt);
     const managementAccountId = config.managementAccountId?.trim();
     const managementKeyId = config.managementKeyId?.trim();
     const managementPrivateKey = config.managementPrivateKey?.trim();

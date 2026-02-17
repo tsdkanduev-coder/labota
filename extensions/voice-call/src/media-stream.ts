@@ -97,9 +97,9 @@ export class MediaStreamHandler {
     let session: StreamSession | null = null;
     const streamToken = this.getStreamToken(_request);
 
-    ws.on("message", async (data: WebSocket.RawData) => {
+    ws.on("message", async (data: WebSocket.RawData, isBinary: boolean) => {
       try {
-        const binaryAudio = this.toBinaryBuffer(data);
+        const binaryAudio = this.toBinaryBuffer(data, isBinary);
         if (binaryAudio) {
           if (!session) {
             session = await this.handleRawStart(ws, streamToken);
@@ -399,7 +399,20 @@ export class MediaStreamHandler {
     return Buffer.from(data).toString("utf8");
   }
 
-  private toBinaryBuffer(data: WebSocket.RawData): Buffer | null {
+  private toBinaryBuffer(data: WebSocket.RawData, isBinary: boolean): Buffer | null {
+    if (isBinary) {
+      if (Buffer.isBuffer(data)) {
+        return data;
+      }
+      if (data instanceof ArrayBuffer) {
+        return Buffer.from(data);
+      }
+      if (Array.isArray(data)) {
+        return Buffer.concat(data);
+      }
+      return null;
+    }
+
     if (Buffer.isBuffer(data)) {
       // Twilio/Vox JSON packets are always text JSON in these integrations.
       // Treat Buffers that look like JSON as text, everything else as raw audio.
