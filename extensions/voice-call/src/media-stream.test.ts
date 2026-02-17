@@ -177,4 +177,47 @@ describe("MediaStreamHandler call identity", () => {
     expect(closeSpy).not.toHaveBeenCalled();
     expect(onConnect).toHaveBeenCalledWith("call-xyz", "stream-2");
   });
+
+  it("accepts provider-specific snake_case call identifiers", async () => {
+    const onConnect = vi.fn();
+    const handler = new MediaStreamHandler({
+      sttProvider: createStubSttProvider(),
+      shouldAcceptStream: ({ callId, token }) =>
+        callId === "vox-history-1" && token === "stream-token-1",
+      onConnect,
+    });
+
+    type HandleStart = (
+      ws: { close: (code?: number, reason?: string) => void },
+      message: unknown,
+      streamToken?: string,
+    ) => Promise<{ callId: string } | null>;
+    const handleStart = (handler as unknown as { handleStart: HandleStart }).handleStart.bind(
+      handler,
+    );
+
+    const closeSpy = vi.fn();
+    const session = await handleStart(
+      { close: closeSpy },
+      {
+        event: "start",
+        streamSid: "stream-3",
+        start: {
+          streamSid: "stream-3",
+          accountSid: "account",
+          tracks: ["inbound"],
+          custom_parameters: {
+            call_session_history_id: "vox-history-1",
+            stream_token: "stream-token-1",
+          },
+          mediaFormat: { encoding: "audio/x-mulaw", sampleRate: 8000, channels: 1 },
+        },
+      },
+      undefined,
+    );
+
+    expect(session?.callId).toBe("vox-history-1");
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onConnect).toHaveBeenCalledWith("vox-history-1", "stream-3");
+  });
 });

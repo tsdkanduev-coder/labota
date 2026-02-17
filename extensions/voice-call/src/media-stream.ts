@@ -154,7 +154,32 @@ export class MediaStreamHandler {
     // Prefer token from start message customParameters (set via TwiML <Parameter>),
     // falling back to query string token. Twilio strips query params from WebSocket
     // URLs but reliably delivers <Parameter> values in customParameters.
-    const effectiveToken = message.start?.customParameters?.token ?? streamToken;
+    const startRecord = this.toRecord(message.start);
+    const customRecord =
+      this.toRecord(startRecord?.customParameters) ??
+      this.toRecord(startRecord?.custom_parameters) ??
+      this.toRecord(startRecord?.customData) ??
+      this.toRecord(startRecord?.custom_data) ??
+      this.toRecord((message as unknown as Record<string, unknown>)?.customParameters) ??
+      this.toRecord((message as unknown as Record<string, unknown>)?.custom_parameters) ??
+      this.toRecord((message as unknown as Record<string, unknown>)?.customData) ??
+      this.toRecord((message as unknown as Record<string, unknown>)?.custom_data);
+    const effectiveToken =
+      this.pickString(customRecord, [
+        "token",
+        "streamToken",
+        "stream_token",
+        "authToken",
+        "auth_token",
+      ]) ||
+      this.pickString(startRecord, [
+        "token",
+        "streamToken",
+        "stream_token",
+        "authToken",
+        "auth_token",
+      ]) ||
+      streamToken;
 
     if (!callId && effectiveToken && this.config.resolveCallIdByToken) {
       const resolvedCallId = this.config.resolveCallIdByToken(effectiveToken);
@@ -215,10 +240,86 @@ export class MediaStreamHandler {
   }
 
   private extractCallId(message: TwilioMediaMessage): string {
-    const custom = message.start?.customParameters;
+    const startRecord = this.toRecord(message.start);
+    const rootRecord = this.toRecord(message);
+    const customRecord =
+      this.toRecord(startRecord?.customParameters) ??
+      this.toRecord(startRecord?.custom_parameters) ??
+      this.toRecord(startRecord?.customData) ??
+      this.toRecord(startRecord?.custom_data) ??
+      this.toRecord(rootRecord?.customParameters) ??
+      this.toRecord(rootRecord?.custom_parameters) ??
+      this.toRecord(rootRecord?.customData) ??
+      this.toRecord(rootRecord?.custom_data);
+
     return (
-      message.start?.callSid || custom?.callSid || custom?.callId || custom?.providerCallId || ""
+      this.pickString(customRecord, [
+        "callSid",
+        "callId",
+        "providerCallId",
+        "call_sid",
+        "call_id",
+        "provider_call_id",
+        "callSessionHistoryId",
+        "call_session_history_id",
+        "sessionId",
+        "session_id",
+        "requestId",
+        "request_id",
+      ]) ||
+      this.pickString(startRecord, [
+        "callSid",
+        "callId",
+        "providerCallId",
+        "call_sid",
+        "call_id",
+        "provider_call_id",
+        "callSessionHistoryId",
+        "call_session_history_id",
+        "sessionId",
+        "session_id",
+        "requestId",
+        "request_id",
+      ]) ||
+      this.pickString(rootRecord, [
+        "callSid",
+        "callId",
+        "providerCallId",
+        "call_sid",
+        "call_id",
+        "provider_call_id",
+        "callSessionHistoryId",
+        "call_session_history_id",
+        "sessionId",
+        "session_id",
+        "requestId",
+        "request_id",
+      ]) ||
+      ""
     );
+  }
+
+  private toRecord(value: unknown): Record<string, unknown> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private pickString(
+    source: Record<string, unknown> | undefined,
+    keys: readonly string[],
+  ): string | undefined {
+    if (!source) {
+      return undefined;
+    }
+    for (const key of keys) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
   }
 
   /**
