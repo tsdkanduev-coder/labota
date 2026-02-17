@@ -220,4 +220,57 @@ describe("MediaStreamHandler call identity", () => {
     expect(closeSpy).not.toHaveBeenCalled();
     expect(onConnect).toHaveBeenCalledWith("vox-history-1", "stream-3");
   });
+
+  it("supports raw stream mode by resolving call ID from stream token", async () => {
+    const onConnect = vi.fn();
+    const handler = new MediaStreamHandler({
+      sttProvider: createStubSttProvider(),
+      resolveCallIdByToken: (token) => (token === "vox-token-1" ? "call-vox-1" : undefined),
+      shouldAcceptStream: ({ callId, token }) => callId === "call-vox-1" && token === "vox-token-1",
+      onConnect,
+    });
+
+    type HandleRawStart = (
+      ws: { close: (code?: number, reason?: string) => void },
+      streamToken?: string,
+    ) => Promise<{ callId: string; streamSid: string } | null>;
+    const handleRawStart = (
+      handler as unknown as { handleRawStart: HandleRawStart }
+    ).handleRawStart.bind(handler);
+
+    const closeSpy = vi.fn();
+    const session = await handleRawStart({ close: closeSpy }, "vox-token-1");
+
+    expect(session?.callId).toBe("call-vox-1");
+    expect(session?.streamSid).toMatch(/^raw-call-vox-1-/);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onConnect).toHaveBeenCalledWith("call-vox-1", expect.stringMatching(/^raw-call-vox-1-/));
+  });
+});
+
+describe("MediaStreamHandler transport", () => {
+  it("sends raw binary audio payload for raw transport sessions", () => {
+    const handler = new MediaStreamHandler({
+      sttProvider: createStubSttProvider(),
+    });
+    const wsSend = vi.fn();
+
+    (
+      handler as unknown as {
+        sessions: Map<string, { ws: { readyState: number; send: (payload: Buffer) => void } }>;
+      }
+    ).sessions.set("raw-stream-1", {
+      callId: "call-1",
+      streamSid: "raw-stream-1",
+      transport: "raw",
+      ws: { readyState: 1, send: wsSend },
+      sttSession: createStubSession(),
+    });
+
+    const audio = Buffer.from([1, 2, 3, 4]);
+    handler.sendAudio("raw-stream-1", audio);
+
+    expect(wsSend).toHaveBeenCalledTimes(1);
+    expect(wsSend).toHaveBeenCalledWith(audio);
+  });
 });

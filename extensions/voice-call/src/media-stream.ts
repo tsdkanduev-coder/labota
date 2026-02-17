@@ -48,6 +48,7 @@ interface StreamSession {
   streamSid: string;
   ws: WebSocket;
   sttSession: RealtimeSTTSession;
+  transport: "twilio-json" | "raw";
 }
 
 type TtsQueueEntry = {
@@ -96,9 +97,20 @@ export class MediaStreamHandler {
     let session: StreamSession | null = null;
     const streamToken = this.getStreamToken(_request);
 
-    ws.on("message", async (data: Buffer) => {
+    ws.on("message", async (data: WebSocket.RawData) => {
       try {
-        const message = JSON.parse(data.toString()) as TwilioMediaMessage;
+        const binaryAudio = this.toBinaryBuffer(data);
+        if (binaryAudio) {
+          if (!session) {
+            session = await this.handleRawStart(ws, streamToken);
+          }
+          if (session) {
+            session.sttSession.sendAudio(binaryAudio);
+          }
+          return;
+        }
+
+        const message = JSON.parse(this.toTextMessage(data)) as TwilioMediaMessage;
 
         switch (message.event) {
           case "connected":
@@ -203,40 +215,50 @@ export class MediaStreamHandler {
       return null;
     }
 
-    // Create STT session
-    const sttSession = this.config.sttProvider.createSession();
-
-    // Set up transcript callbacks
-    sttSession.onPartial((partial) => {
-      this.config.onPartialTranscript?.(callId, partial);
-    });
-
-    sttSession.onTranscript((transcript) => {
-      this.config.onTranscript?.(callId, transcript);
-    });
-
-    sttSession.onSpeechStart(() => {
-      this.config.onSpeechStart?.(callId);
-    });
-
-    const session: StreamSession = {
+    return this.createSession({
+      ws,
       callId,
       streamSid,
-      ws,
-      sttSession,
-    };
-
-    this.sessions.set(streamSid, session);
-
-    // Notify connection BEFORE STT connect so TTS can work even if STT fails
-    this.config.onConnect?.(callId, streamSid);
-
-    // Connect to OpenAI STT (non-blocking, log errors but don't fail the call)
-    sttSession.connect().catch((err) => {
-      console.warn(`[MediaStream] STT connection failed (TTS still works):`, err.message);
+      transport: "twilio-json",
+      connectLogPrefix: "[MediaStream] Stream started",
     });
+  }
 
-    return session;
+  /**
+   * Handle provider raw audio mode (e.g. Voximplant sendMediaTo WebSocket).
+   * In this mode, stream identity can be derived from URL token.
+   */
+  private async handleRawStart(ws: WebSocket, streamToken?: string): Promise<StreamSession | null> {
+    if (!streamToken || !this.config.resolveCallIdByToken) {
+      console.warn("[MediaStream] Missing stream token for raw mode; closing stream");
+      ws.close(1008, "Missing stream token");
+      return null;
+    }
+
+    const callId = this.config.resolveCallIdByToken(streamToken);
+    if (!callId) {
+      console.warn("[MediaStream] Could not resolve call identifier from stream token");
+      ws.close(1008, "Unknown call");
+      return null;
+    }
+
+    const streamSid = `raw-${callId}-${Date.now()}`;
+    if (
+      this.config.shouldAcceptStream &&
+      !this.config.shouldAcceptStream({ callId, streamSid, token: streamToken })
+    ) {
+      console.warn(`[MediaStream] Rejecting raw stream for unknown call: ${callId}`);
+      ws.close(1008, "Unknown call");
+      return null;
+    }
+
+    return this.createSession({
+      ws,
+      callId,
+      streamSid,
+      transport: "raw",
+      connectLogPrefix: "[MediaStream] Raw stream started",
+    });
   }
 
   private extractCallId(message: TwilioMediaMessage): string {
@@ -322,6 +344,80 @@ export class MediaStreamHandler {
     return undefined;
   }
 
+  private async createSession(params: {
+    ws: WebSocket;
+    callId: string;
+    streamSid: string;
+    transport: "twilio-json" | "raw";
+    connectLogPrefix: string;
+  }): Promise<StreamSession> {
+    const { ws, callId, streamSid, transport, connectLogPrefix } = params;
+    console.log(`${connectLogPrefix}: ${streamSid} (call: ${callId})`);
+
+    const sttSession = this.config.sttProvider.createSession();
+
+    sttSession.onPartial((partial) => {
+      this.config.onPartialTranscript?.(callId, partial);
+    });
+
+    sttSession.onTranscript((transcript) => {
+      this.config.onTranscript?.(callId, transcript);
+    });
+
+    sttSession.onSpeechStart(() => {
+      this.config.onSpeechStart?.(callId);
+    });
+
+    const session: StreamSession = {
+      callId,
+      streamSid,
+      ws,
+      sttSession,
+      transport,
+    };
+
+    this.sessions.set(streamSid, session);
+    this.config.onConnect?.(callId, streamSid);
+
+    sttSession.connect().catch((err) => {
+      console.warn(`[MediaStream] STT connection failed (TTS still works):`, err.message);
+    });
+
+    return session;
+  }
+
+  private toTextMessage(data: WebSocket.RawData): string {
+    if (typeof data === "string") {
+      return data;
+    }
+    if (Buffer.isBuffer(data)) {
+      return data.toString("utf8");
+    }
+    if (Array.isArray(data)) {
+      return Buffer.concat(data).toString("utf8");
+    }
+    return Buffer.from(data).toString("utf8");
+  }
+
+  private toBinaryBuffer(data: WebSocket.RawData): Buffer | null {
+    if (Buffer.isBuffer(data)) {
+      // Twilio/Vox JSON packets are always text JSON in these integrations.
+      // Treat Buffers that look like JSON as text, everything else as raw audio.
+      const firstByte = data[0];
+      if (firstByte === 0x7b || firstByte === 0x5b) {
+        return null;
+      }
+      return data;
+    }
+    if (data instanceof ArrayBuffer) {
+      return Buffer.from(data);
+    }
+    if (Array.isArray(data)) {
+      return Buffer.concat(data);
+    }
+    return null;
+  }
+
   /**
    * Handle stream stop event.
    */
@@ -359,7 +455,39 @@ export class MediaStreamHandler {
    */
   private sendToStream(streamSid: string, message: unknown): void {
     const session = this.getOpenSession(streamSid);
-    session?.ws.send(JSON.stringify(message));
+    if (!session) {
+      return;
+    }
+    if (session.transport === "raw") {
+      const rawPayload = this.extractRawAudioPayload(message);
+      if (rawPayload) {
+        session.ws.send(rawPayload);
+      }
+      return;
+    }
+    session.ws.send(JSON.stringify(message));
+  }
+
+  private extractRawAudioPayload(message: unknown): Buffer | null {
+    if (!message || typeof message !== "object") {
+      return null;
+    }
+    const msg = message as {
+      event?: string;
+      media?: { payload?: unknown };
+    };
+    if (msg.event !== "media") {
+      return null;
+    }
+    const payload = msg.media?.payload;
+    if (typeof payload !== "string" || payload.length === 0) {
+      return null;
+    }
+    try {
+      return Buffer.from(payload, "base64");
+    } catch {
+      return null;
+    }
   }
 
   /**
