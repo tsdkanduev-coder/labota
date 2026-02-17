@@ -32,6 +32,12 @@ export interface VoximplantProviderOptions {
 }
 
 type JsonRecord = Record<string, unknown>;
+type CachedJwt = { token: string; exp: number };
+type VoximplantServiceAccount = {
+  accountId: string;
+  keyId: string;
+  privateKey: string;
+};
 
 /**
  * Voximplant provider using:
@@ -42,13 +48,16 @@ type JsonRecord = Record<string, unknown>;
 export class VoximplantProvider implements VoiceCallProvider {
   readonly name = "voximplant" as const;
 
-  private readonly managementJwt: string;
+  private readonly managementJwtStatic: string | null;
+  private readonly managementServiceAccount: VoximplantServiceAccount | null;
+  private readonly managementJwtRefreshSkewSec: number;
   private readonly ruleId: string;
   private readonly apiBaseUrl: string;
   private readonly options: VoximplantProviderOptions;
   private currentPublicUrl: string | null = null;
   private ttsProvider: TelephonyTtsProvider | null = null;
   private mediaStreamHandler: MediaStreamHandler | null = null;
+  private cachedManagementJwt: CachedJwt | null = null;
 
   private providerCallIdToControlUrl = new Map<string, string>();
   private providerCallIdToCallId = new Map<string, string>();
@@ -57,14 +66,30 @@ export class VoximplantProvider implements VoiceCallProvider {
   private streamAuthTokens = new Map<string, string>();
 
   constructor(config: VoximplantConfig, options: VoximplantProviderOptions = {}) {
-    if (!config.managementJwt) {
-      throw new Error("Voximplant managementJwt is required");
+    const managementJwt = config.managementJwt?.trim() || null;
+    const managementAccountId = config.managementAccountId?.trim();
+    const managementKeyId = config.managementKeyId?.trim();
+    const managementPrivateKey = config.managementPrivateKey?.trim();
+    const hasServiceAccount =
+      Boolean(managementAccountId) && Boolean(managementKeyId) && Boolean(managementPrivateKey);
+    if (!managementJwt && !hasServiceAccount) {
+      throw new Error(
+        "Voximplant auth required: set managementJwt OR service-account managementAccountId/managementKeyId/managementPrivateKey",
+      );
     }
     if (!config.ruleId) {
       throw new Error("Voximplant ruleId is required");
     }
 
-    this.managementJwt = config.managementJwt;
+    this.managementJwtStatic = managementJwt;
+    this.managementServiceAccount = hasServiceAccount
+      ? {
+          accountId: managementAccountId || "",
+          keyId: managementKeyId || "",
+          privateKey: managementPrivateKey || "",
+        }
+      : null;
+    this.managementJwtRefreshSkewSec = config.managementJwtRefreshSkewSec ?? 60;
     this.ruleId = config.ruleId;
     this.apiBaseUrl = (config.apiBaseUrl || "https://api.voximplant.com/platform_api").replace(
       /\/+$/,
@@ -308,14 +333,28 @@ export class VoximplantProvider implements VoiceCallProvider {
     params: Record<string, string>,
   ): Promise<JsonRecord> {
     const body = new URLSearchParams(params);
-    const response = await fetch(`${this.apiBaseUrl}/${action}/`, {
+    let managementJwt = await this.getManagementJwt();
+    let response = await fetch(`${this.apiBaseUrl}/${action}/`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${this.managementJwt}`,
+        Authorization: `Bearer ${managementJwt}`,
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body,
     });
+
+    // If service-account mode is enabled, rotate token and retry once on auth error.
+    if (response.status === 401 && this.managementServiceAccount) {
+      managementJwt = await this.getManagementJwt(true);
+      response = await fetch(`${this.apiBaseUrl}/${action}/`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${managementJwt}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+      });
+    }
 
     const text = await response.text();
     let parsed: unknown;
@@ -446,6 +485,43 @@ export class VoximplantProvider implements VoiceCallProvider {
     const url = new URL(baseUrl);
     url.searchParams.set("token", token);
     return url.toString();
+  }
+
+  private async getManagementJwt(forceRefresh = false): Promise<string> {
+    if (this.managementServiceAccount) {
+      const now = Math.floor(Date.now() / 1000);
+      if (
+        !forceRefresh &&
+        this.cachedManagementJwt &&
+        this.cachedManagementJwt.exp - this.managementJwtRefreshSkewSec > now
+      ) {
+        return this.cachedManagementJwt.token;
+      }
+      const next = this.generateManagementJwt(now);
+      this.cachedManagementJwt = next;
+      return next.token;
+    }
+    if (this.managementJwtStatic) {
+      return this.managementJwtStatic;
+    }
+    throw new Error("Voximplant management JWT is not configured");
+  }
+
+  private generateManagementJwt(nowSec: number): CachedJwt {
+    if (!this.managementServiceAccount) {
+      throw new Error("Voximplant service-account credentials are not configured");
+    }
+    const { accountId, keyId, privateKey } = this.managementServiceAccount;
+    const exp = nowSec + 3600;
+    const header = { alg: "RS256", typ: "JWT", kid: keyId };
+    const payload = { iat: nowSec, iss: accountId, exp };
+    const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
+    const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const signingInput = `${headerB64}.${payloadB64}`;
+    const signature = crypto
+      .sign("RSA-SHA256", Buffer.from(signingInput, "utf8"), privateKey)
+      .toString("base64url");
+    return { token: `${signingInput}.${signature}`, exp };
   }
 
   private normalizeEvent(

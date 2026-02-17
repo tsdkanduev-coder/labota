@@ -53,6 +53,10 @@ describe("validateProviderConfig", () => {
     delete process.env.PLIVO_AUTH_ID;
     delete process.env.PLIVO_AUTH_TOKEN;
     delete process.env.VOXIMPLANT_MANAGEMENT_JWT;
+    delete process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID;
+    delete process.env.VOXIMPLANT_MANAGEMENT_KEY_ID;
+    delete process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY;
+    delete process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY_B64;
     delete process.env.VOXIMPLANT_RULE_ID;
     delete process.env.VOXIMPLANT_WEBHOOK_SECRET;
   });
@@ -266,7 +270,23 @@ describe("validateProviderConfig", () => {
       expect(result.errors).toEqual([]);
     });
 
-    it("fails validation when managementJwt is missing everywhere", () => {
+    it("passes validation with service-account credentials in env", () => {
+      process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID = "10277772";
+      process.env.VOXIMPLANT_MANAGEMENT_KEY_ID = "key-id";
+      process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY =
+        "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----";
+      process.env.VOXIMPLANT_RULE_ID = "12345";
+      process.env.VOXIMPLANT_WEBHOOK_SECRET = "secret";
+      let config = createBaseConfig("voximplant");
+      config = resolveVoiceCallConfig(config);
+
+      const result = validateProviderConfig(config);
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    it("fails validation when Voximplant auth is missing everywhere", () => {
       process.env.VOXIMPLANT_RULE_ID = "12345";
       process.env.VOXIMPLANT_WEBHOOK_SECRET = "secret";
       let config = createBaseConfig("voximplant");
@@ -276,7 +296,7 @@ describe("validateProviderConfig", () => {
 
       expect(result.valid).toBe(false);
       expect(result.errors).toContain(
-        "plugins.entries.voice-call.config.voximplant.managementJwt is required (or set VOXIMPLANT_MANAGEMENT_JWT env)",
+        "Configure Voximplant auth: either voximplant.managementJwt (or VOXIMPLANT_MANAGEMENT_JWT env) OR service-account fields voximplant.managementAccountId/managementKeyId/managementPrivateKey",
       );
     });
 

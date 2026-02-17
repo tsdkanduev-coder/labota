@@ -47,6 +47,20 @@ const voiceCallConfigSchema = {
     "twilio.accountSid": { label: "Twilio Account SID" },
     "twilio.authToken": { label: "Twilio Auth Token", sensitive: true },
     "voximplant.managementJwt": { label: "Voximplant Management JWT", sensitive: true },
+    "voximplant.managementAccountId": {
+      label: "Voximplant Management Account ID",
+      advanced: true,
+    },
+    "voximplant.managementKeyId": { label: "Voximplant Management Key ID", advanced: true },
+    "voximplant.managementPrivateKey": {
+      label: "Voximplant Management Private Key",
+      sensitive: true,
+      advanced: true,
+    },
+    "voximplant.managementJwtRefreshSkewSec": {
+      label: "Voximplant JWT Refresh Skew (sec)",
+      advanced: true,
+    },
     "voximplant.ruleId": { label: "Voximplant Rule ID" },
     "voximplant.apiBaseUrl": { label: "Voximplant API Base URL", advanced: true },
     "voximplant.webhookSecret": { label: "Voximplant Webhook Secret", sensitive: true },

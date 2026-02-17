@@ -60,7 +60,13 @@ Put under `plugins.entries.voice-call.config`:
   },
 
   voximplant: {
+    // Option A: static JWT (manual rotation every <= 1h)
     managementJwt: "eyJ...",
+    // Option B: service-account auto JWT (recommended)
+    // managementAccountId: "10277772",
+    // managementKeyId: "f4b6bf31-....",
+    // managementPrivateKey: "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----",
+    // managementJwtRefreshSkewSec: 60,
     ruleId: "123456",
     webhookSecret: "shared_secret",
     // apiBaseUrl: "https://api.voximplant.com/platform_api",
@@ -95,6 +101,10 @@ Notes:
 - `mock` is a local dev provider (no network calls).
 - Telnyx requires `telnyx.publicKey` (or `TELNYX_PUBLIC_KEY`) unless `skipSignatureVerification` is true.
 - Voximplant requires `voximplant.webhookSecret` (or `VOXIMPLANT_WEBHOOK_SECRET`) unless `skipSignatureVerification` is true.
+- Voximplant auth can be either static `managementJwt` or auto-generated from service-account fields:
+  `managementAccountId`, `managementKeyId`, `managementPrivateKey`
+  (or env: `VOXIMPLANT_MANAGEMENT_ACCOUNT_ID`, `VOXIMPLANT_MANAGEMENT_KEY_ID`,
+  `VOXIMPLANT_MANAGEMENT_PRIVATE_KEY` / `VOXIMPLANT_MANAGEMENT_PRIVATE_KEY_B64`).
 - `tunnel.allowNgrokFreeTierLoopbackBypass: true` allows Twilio webhooks with invalid signatures **only** when `tunnel.provider="ngrok"` and `serve.bind` is loopback (ngrok local agent). Use for local dev only.
 
 ## Voximplant scenario contract

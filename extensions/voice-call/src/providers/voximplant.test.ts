@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebhookContext } from "../types.js";
 import { VoximplantProvider } from "./voximplant.js";
@@ -230,6 +231,69 @@ describe("VoximplantProvider", () => {
     expect(sendAudio).toHaveBeenCalled();
     expect(sendMark).toHaveBeenCalled();
     // Only StartScenarios should hit fetch; no control speak request.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("generates management JWT from service-account credentials", async () => {
+    const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const rawHeaders = init?.headers;
+      let authHeader = "";
+      if (rawHeaders instanceof Headers) {
+        authHeader = rawHeaders.get("Authorization") ?? "";
+      } else if (Array.isArray(rawHeaders)) {
+        const pair = rawHeaders.find(([key]) => key.toLowerCase() === "authorization");
+        authHeader = pair?.[1] ?? "";
+      } else if (rawHeaders && typeof rawHeaders === "object") {
+        const map = rawHeaders as Record<string, string>;
+        authHeader = map.Authorization ?? map.authorization ?? "";
+      }
+
+      expect(authHeader.startsWith("Bearer ")).toBe(true);
+      const token = authHeader.slice("Bearer ".length);
+      const [headerPart, payloadPart] = token.split(".");
+      expect(headerPart).toBeTruthy();
+      expect(payloadPart).toBeTruthy();
+      const header = JSON.parse(Buffer.from(headerPart || "", "base64url").toString("utf8"));
+      const payload = JSON.parse(Buffer.from(payloadPart || "", "base64url").toString("utf8"));
+      expect(header).toMatchObject({ alg: "RS256", typ: "JWT", kid: "key-1" });
+      expect(payload.iss).toBe("10277772");
+      expect(payload.exp - payload.iat).toBe(3600);
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            result: {
+              call_session_history_id: "history-1",
+            },
+          }),
+      } as Response;
+    });
+
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new VoximplantProvider({
+      managementAccountId: "10277772",
+      managementKeyId: "key-1",
+      managementPrivateKey: privateKeyPem,
+      ruleId: "rule-1",
+      webhookSecret: "secret",
+      apiBaseUrl: "https://api.voximplant.com/platform_api",
+      controlTimeoutMs: 1000,
+    });
+
+    const initiated = await provider.initiateCall({
+      callId: "call-1",
+      from: "+79990001122",
+      to: "+79990003344",
+      webhookUrl: "https://openclaw.example/voice/webhook",
+    });
+
+    expect(initiated.providerCallId).toBe("history-1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

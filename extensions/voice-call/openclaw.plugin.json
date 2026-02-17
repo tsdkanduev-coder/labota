@@ -45,6 +45,23 @@
       "label": "Voximplant Management JWT",
       "sensitive": true
     },
+    "voximplant.managementAccountId": {
+      "label": "Voximplant Management Account ID",
+      "advanced": true
+    },
+    "voximplant.managementKeyId": {
+      "label": "Voximplant Management Key ID",
+      "advanced": true
+    },
+    "voximplant.managementPrivateKey": {
+      "label": "Voximplant Management Private Key",
+      "sensitive": true,
+      "advanced": true
+    },
+    "voximplant.managementJwtRefreshSkewSec": {
+      "label": "Voximplant JWT Refresh Skew (sec)",
+      "advanced": true
+    },
     "voximplant.ruleId": {
       "label": "Voximplant Rule ID"
     },
@@ -234,6 +251,19 @@
         "properties": {
           "managementJwt": {
             "type": "string"
+          },
+          "managementAccountId": {
+            "type": "string"
+          },
+          "managementKeyId": {
+            "type": "string"
+          },
+          "managementPrivateKey": {
+            "type": "string"
+          },
+          "managementJwtRefreshSkewSec": {
+            "type": "integer",
+            "minimum": 0
           },
           "ruleId": {
             "type": "string"

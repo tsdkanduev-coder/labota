@@ -90,6 +90,10 @@ function resolveProvider(config: VoiceCallConfig): VoiceCallProvider {
       return new VoximplantProvider(
         {
           managementJwt: config.voximplant?.managementJwt,
+          managementAccountId: config.voximplant?.managementAccountId,
+          managementKeyId: config.voximplant?.managementKeyId,
+          managementPrivateKey: config.voximplant?.managementPrivateKey,
+          managementJwtRefreshSkewSec: config.voximplant?.managementJwtRefreshSkewSec,
           ruleId: config.voximplant?.ruleId,
           apiBaseUrl: config.voximplant?.apiBaseUrl,
           webhookSecret: config.voximplant?.webhookSecret,

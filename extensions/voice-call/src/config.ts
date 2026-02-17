@@ -72,6 +72,14 @@ export const VoximplantConfigSchema = z
   .object({
     /** Voximplant Management API JWT token */
     managementJwt: z.string().min(1).optional(),
+    /** Voximplant service-account account_id for auto JWT generation */
+    managementAccountId: z.string().min(1).optional(),
+    /** Voximplant service-account key_id for auto JWT generation */
+    managementKeyId: z.string().min(1).optional(),
+    /** Voximplant service-account private_key PEM for auto JWT generation */
+    managementPrivateKey: z.string().min(1).optional(),
+    /** Seconds before JWT expiry when token should be refreshed */
+    managementJwtRefreshSkewSec: z.number().int().nonnegative().default(60),
     /** Voximplant scenario rule ID for StartScenarios */
     ruleId: z.string().min(1).optional(),
     /** Voximplant Platform API base URL */
@@ -385,6 +393,26 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
     resolved.voximplant = resolved.voximplant ?? {};
     resolved.voximplant.managementJwt =
       resolved.voximplant.managementJwt ?? process.env.VOXIMPLANT_MANAGEMENT_JWT;
+    resolved.voximplant.managementAccountId =
+      resolved.voximplant.managementAccountId ?? process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID;
+    resolved.voximplant.managementKeyId =
+      resolved.voximplant.managementKeyId ?? process.env.VOXIMPLANT_MANAGEMENT_KEY_ID;
+    const envPrivateKeyRaw =
+      resolved.voximplant.managementPrivateKey ?? process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY;
+    const envPrivateKeyB64 = process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY_B64;
+    let resolvedPrivateKey = envPrivateKeyRaw;
+    if (!resolvedPrivateKey && envPrivateKeyB64) {
+      try {
+        resolvedPrivateKey = Buffer.from(envPrivateKeyB64, "base64").toString("utf8");
+      } catch {
+        resolvedPrivateKey = envPrivateKeyRaw;
+      }
+    }
+    if (typeof resolvedPrivateKey === "string" && resolvedPrivateKey.includes("\\n")) {
+      resolvedPrivateKey = resolvedPrivateKey.replace(/\\n/g, "\n");
+    }
+    resolved.voximplant.managementPrivateKey =
+      resolved.voximplant.managementPrivateKey ?? resolvedPrivateKey;
     resolved.voximplant.ruleId = resolved.voximplant.ruleId ?? process.env.VOXIMPLANT_RULE_ID;
     resolved.voximplant.apiBaseUrl =
       resolved.voximplant.apiBaseUrl ??
@@ -402,6 +430,12 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
         : undefined;
     resolved.voximplant.controlTimeoutMs =
       resolved.voximplant.controlTimeoutMs ?? envControlTimeout ?? 10000;
+    const refreshSkewRaw = process.env.VOXIMPLANT_MANAGEMENT_JWT_REFRESH_SKEW_SEC;
+    const parsedRefreshSkew = refreshSkewRaw ? Number.parseInt(refreshSkewRaw, 10) : Number.NaN;
+    const envRefreshSkew =
+      Number.isFinite(parsedRefreshSkew) && parsedRefreshSkew >= 0 ? parsedRefreshSkew : undefined;
+    resolved.voximplant.managementJwtRefreshSkewSec =
+      resolved.voximplant.managementJwtRefreshSkewSec ?? envRefreshSkew ?? 60;
   }
 
   // Tunnel Config
@@ -494,10 +528,37 @@ export function validateProviderConfig(config: VoiceCallConfig): {
   }
 
   if (config.provider === "voximplant") {
-    if (!config.voximplant?.managementJwt) {
-      errors.push(
-        "plugins.entries.voice-call.config.voximplant.managementJwt is required (or set VOXIMPLANT_MANAGEMENT_JWT env)",
-      );
+    const managementJwt = config.voximplant?.managementJwt?.trim();
+    const managementAccountId = config.voximplant?.managementAccountId?.trim();
+    const managementKeyId = config.voximplant?.managementKeyId?.trim();
+    const managementPrivateKey = config.voximplant?.managementPrivateKey?.trim();
+    const hasServiceAccount =
+      Boolean(managementAccountId) && Boolean(managementKeyId) && Boolean(managementPrivateKey);
+    const hasAnyServiceAccountField =
+      Boolean(managementAccountId) || Boolean(managementKeyId) || Boolean(managementPrivateKey);
+
+    if (!managementJwt && !hasServiceAccount) {
+      if (hasAnyServiceAccountField) {
+        if (!managementAccountId) {
+          errors.push(
+            "plugins.entries.voice-call.config.voximplant.managementAccountId is required for service-account JWT mode (or set VOXIMPLANT_MANAGEMENT_ACCOUNT_ID env)",
+          );
+        }
+        if (!managementKeyId) {
+          errors.push(
+            "plugins.entries.voice-call.config.voximplant.managementKeyId is required for service-account JWT mode (or set VOXIMPLANT_MANAGEMENT_KEY_ID env)",
+          );
+        }
+        if (!managementPrivateKey) {
+          errors.push(
+            "plugins.entries.voice-call.config.voximplant.managementPrivateKey is required for service-account JWT mode (or set VOXIMPLANT_MANAGEMENT_PRIVATE_KEY / VOXIMPLANT_MANAGEMENT_PRIVATE_KEY_B64 env)",
+          );
+        }
+      } else {
+        errors.push(
+          "Configure Voximplant auth: either voximplant.managementJwt (or VOXIMPLANT_MANAGEMENT_JWT env) OR service-account fields voximplant.managementAccountId/managementKeyId/managementPrivateKey",
+        );
+      }
     }
     if (!config.voximplant?.ruleId) {
       errors.push(
