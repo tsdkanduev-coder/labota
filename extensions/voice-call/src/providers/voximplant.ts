@@ -151,7 +151,7 @@ export class VoximplantProvider implements VoiceCallProvider {
       this.callStreamMap.delete(internalCallId);
     }
 
-    if (!streamSid) {
+    if (streamSid === undefined) {
       return;
     }
 
@@ -181,7 +181,7 @@ export class VoximplantProvider implements VoiceCallProvider {
       return;
     }
     const streamSid = this.callStreamMap.get(callKey);
-    if (streamSid) {
+    if (streamSid !== undefined) {
       this.mediaStreamHandler.clearTtsQueue(streamSid);
     }
   }
@@ -284,7 +284,7 @@ export class VoximplantProvider implements VoiceCallProvider {
     }
 
     const streamSid = this.callStreamMap.get(input.callId);
-    if (streamSid && !this.callStreamMap.has(providerCallId)) {
+    if (streamSid !== undefined && !this.callStreamMap.has(providerCallId)) {
       this.callStreamMap.set(providerCallId, streamSid);
     }
 
@@ -304,9 +304,8 @@ export class VoximplantProvider implements VoiceCallProvider {
   }
 
   async playTts(input: PlayTtsInput): Promise<void> {
-    const streamSid =
-      this.callStreamMap.get(input.providerCallId) || this.callStreamMap.get(input.callId);
-    if (this.ttsProvider && this.mediaStreamHandler && streamSid) {
+    const streamSid = this.resolveStreamSid(input.providerCallId, input.callId);
+    if (this.ttsProvider && this.mediaStreamHandler && streamSid !== undefined) {
       await this.playTtsViaStream(input.text, streamSid);
       return;
     }
@@ -320,9 +319,8 @@ export class VoximplantProvider implements VoiceCallProvider {
   }
 
   async startListening(input: StartListeningInput): Promise<void> {
-    const streamSid =
-      this.callStreamMap.get(input.providerCallId) || this.callStreamMap.get(input.callId);
-    if (streamSid) {
+    const streamSid = this.resolveStreamSid(input.providerCallId, input.callId);
+    if (streamSid !== undefined) {
       return;
     }
 
@@ -333,9 +331,8 @@ export class VoximplantProvider implements VoiceCallProvider {
   }
 
   async stopListening(input: StopListeningInput): Promise<void> {
-    const streamSid =
-      this.callStreamMap.get(input.providerCallId) || this.callStreamMap.get(input.callId);
-    if (streamSid) {
+    const streamSid = this.resolveStreamSid(input.providerCallId, input.callId);
+    if (streamSid !== undefined) {
       return;
     }
 
@@ -581,7 +578,7 @@ export class VoximplantProvider implements VoiceCallProvider {
         this.streamAuthTokens.set(providerCallId, streamToken);
       }
       const streamSid = this.callStreamMap.get(callId);
-      if (streamSid && !this.callStreamMap.has(providerCallId)) {
+      if (streamSid !== undefined && !this.callStreamMap.has(providerCallId)) {
         this.callStreamMap.set(providerCallId, streamSid);
       }
     }
@@ -666,6 +663,14 @@ export class VoximplantProvider implements VoiceCallProvider {
       default:
         return null;
     }
+  }
+
+  private resolveStreamSid(providerCallId: string, callId: string): string | undefined {
+    const byProviderCallId = this.callStreamMap.get(providerCallId);
+    if (byProviderCallId !== undefined) {
+      return byProviderCallId;
+    }
+    return this.callStreamMap.get(callId);
   }
 
   private toNormalizedEventType(rawType?: string): NormalizedEvent["type"] | null {

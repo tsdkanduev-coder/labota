@@ -234,6 +234,79 @@ describe("VoximplantProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("treats empty streamSid as an active media stream", async () => {
+    const fetchMock = vi.fn(async () => {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            result: {
+              call_session_history_id: "history-empty",
+              media_session_access_secure_url: "https://control.example/session-empty",
+            },
+          }),
+      } as Response;
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new VoximplantProvider(
+      {
+        managementJwt: "jwt",
+        ruleId: "rule-1",
+        webhookSecret: "secret",
+        apiBaseUrl: "https://api.voximplant.com/platform_api",
+        controlTimeoutMs: 1000,
+      },
+      {
+        webhookSecret: "secret",
+        publicUrl: "https://openclaw.example/voice/webhook",
+        streamPath: "/voice/stream",
+      },
+    );
+
+    const initiated = await provider.initiateCall({
+      callId: "call-empty",
+      from: "+79990001122",
+      to: "+79990003344",
+      webhookUrl: "https://openclaw.example/voice/webhook",
+    });
+    expect(initiated.providerCallId).toBe("history-empty");
+
+    const queueTts = vi.fn(
+      async (_streamSid: string, playFn: (signal: AbortSignal) => Promise<void>) => {
+        const controller = new AbortController();
+        await playFn(controller.signal);
+      },
+    );
+    const sendAudio = vi.fn();
+    const sendMark = vi.fn();
+    const clearTtsQueue = vi.fn();
+
+    provider.setMediaStreamHandler({
+      queueTts,
+      sendAudio,
+      sendMark,
+      clearTtsQueue,
+    } as unknown as import("../media-stream.js").MediaStreamHandler);
+    provider.setTTSProvider({
+      synthesizeForTelephony: async () => Buffer.alloc(320, 1),
+    });
+    provider.registerCallStream("call-empty", "");
+
+    await provider.playTts({
+      callId: "call-empty",
+      providerCallId: "history-empty",
+      text: "Hello over empty stream sid",
+    });
+
+    expect(queueTts).toHaveBeenCalledTimes(1);
+    expect(sendAudio).toHaveBeenCalled();
+    expect(sendMark).toHaveBeenCalled();
+    // Only StartScenarios should hit fetch; no control speak request fallback.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("generates management JWT from service-account credentials", async () => {
     const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
     const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
