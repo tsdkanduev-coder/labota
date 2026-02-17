@@ -7,6 +7,19 @@ import { WebSocket, WebSocketServer } from "ws";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { attachGatewayUpgradeHandler, createGatewayHttpServer } from "./server-http.js";
 
+function wsDataToString(data: WebSocket.RawData): string {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data).toString("utf8");
+  }
+  if (data instanceof Buffer) {
+    return data.toString("utf8");
+  }
+  return Buffer.from(data).toString("utf8");
+}
+
 async function withTempConfig(params: { cfg: unknown; run: () => Promise<void> }): Promise<void> {
   const prevConfigPath = process.env.OPENCLAW_CONFIG_PATH;
   const prevDisableCache = process.env.OPENCLAW_DISABLE_CONFIG_CACHE;
@@ -181,7 +194,7 @@ describe("gateway voice-call proxy", () => {
       upstreamWss.handleUpgrade(req, socket, head, (ws) => {
         ws.send("upstream-ready");
         ws.on("message", (message) => {
-          ws.send(`echo:${message.toString()}`);
+          ws.send(`echo:${wsDataToString(message)}`);
         });
       });
     });
@@ -255,7 +268,7 @@ describe("gateway voice-call proxy", () => {
                 ws.send("ping");
               });
               ws.on("message", (data) => {
-                received.push(data.toString());
+                received.push(wsDataToString(data));
                 if (received.includes("echo:ping")) {
                   clearTimeout(timer);
                   ws.terminate();
