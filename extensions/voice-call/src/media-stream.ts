@@ -143,25 +143,25 @@ export class MediaStreamHandler {
     message: TwilioMediaMessage,
     streamToken?: string,
   ): Promise<StreamSession | null> {
-    const streamSid = message.streamSid || "";
-    const callSid = message.start?.callSid || "";
+    const streamSid = message.streamSid || message.start?.streamSid || "";
+    const callId = this.extractCallId(message);
 
     // Prefer token from start message customParameters (set via TwiML <Parameter>),
     // falling back to query string token. Twilio strips query params from WebSocket
     // URLs but reliably delivers <Parameter> values in customParameters.
     const effectiveToken = message.start?.customParameters?.token ?? streamToken;
 
-    console.log(`[MediaStream] Stream started: ${streamSid} (call: ${callSid})`);
-    if (!callSid) {
-      console.warn("[MediaStream] Missing callSid; closing stream");
-      ws.close(1008, "Missing callSid");
+    console.log(`[MediaStream] Stream started: ${streamSid} (call: ${callId})`);
+    if (!callId) {
+      console.warn("[MediaStream] Missing call identifier; closing stream");
+      ws.close(1008, "Missing call identifier");
       return null;
     }
     if (
       this.config.shouldAcceptStream &&
-      !this.config.shouldAcceptStream({ callId: callSid, streamSid, token: effectiveToken })
+      !this.config.shouldAcceptStream({ callId, streamSid, token: effectiveToken })
     ) {
-      console.warn(`[MediaStream] Rejecting stream for unknown call: ${callSid}`);
+      console.warn(`[MediaStream] Rejecting stream for unknown call: ${callId}`);
       ws.close(1008, "Unknown call");
       return null;
     }
@@ -171,19 +171,19 @@ export class MediaStreamHandler {
 
     // Set up transcript callbacks
     sttSession.onPartial((partial) => {
-      this.config.onPartialTranscript?.(callSid, partial);
+      this.config.onPartialTranscript?.(callId, partial);
     });
 
     sttSession.onTranscript((transcript) => {
-      this.config.onTranscript?.(callSid, transcript);
+      this.config.onTranscript?.(callId, transcript);
     });
 
     sttSession.onSpeechStart(() => {
-      this.config.onSpeechStart?.(callSid);
+      this.config.onSpeechStart?.(callId);
     });
 
     const session: StreamSession = {
-      callId: callSid,
+      callId,
       streamSid,
       ws,
       sttSession,
@@ -192,7 +192,7 @@ export class MediaStreamHandler {
     this.sessions.set(streamSid, session);
 
     // Notify connection BEFORE STT connect so TTS can work even if STT fails
-    this.config.onConnect?.(callSid, streamSid);
+    this.config.onConnect?.(callId, streamSid);
 
     // Connect to OpenAI STT (non-blocking, log errors but don't fail the call)
     sttSession.connect().catch((err) => {
@@ -200,6 +200,13 @@ export class MediaStreamHandler {
     });
 
     return session;
+  }
+
+  private extractCallId(message: TwilioMediaMessage): string {
+    const custom = message.start?.customParameters;
+    return (
+      message.start?.callSid || custom?.callSid || custom?.callId || custom?.providerCallId || ""
+    );
   }
 
   /**
@@ -396,7 +403,9 @@ interface TwilioMediaMessage {
   start?: {
     streamSid: string;
     accountSid: string;
-    callSid: string;
+    callSid?: string;
+    callId?: string;
+    providerCallId?: string;
     tracks: string[];
     customParameters?: Record<string, string>;
     mediaFormat: {

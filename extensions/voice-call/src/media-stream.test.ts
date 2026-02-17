@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   OpenAIRealtimeSTTProvider,
   RealtimeSTTSession,
@@ -92,5 +92,49 @@ describe("MediaStreamHandler TTS queue", () => {
     await flush();
 
     expect(queuedRan).toBe(false);
+  });
+});
+
+describe("MediaStreamHandler call identity", () => {
+  it("accepts start events with customParameters.callId when callSid is absent", async () => {
+    const onConnect = vi.fn();
+    const handler = new MediaStreamHandler({
+      sttProvider: createStubSttProvider(),
+      shouldAcceptStream: ({ callId }) => callId === "call-123",
+      onConnect,
+    });
+
+    type HandleStart = (
+      ws: { close: (code?: number, reason?: string) => void },
+      message: unknown,
+      streamToken?: string,
+    ) => Promise<{ callId: string } | null>;
+    const handleStart = (handler as unknown as { handleStart: HandleStart }).handleStart.bind(
+      handler,
+    );
+
+    const closeSpy = vi.fn();
+    const session = await handleStart(
+      { close: closeSpy },
+      {
+        event: "start",
+        streamSid: "stream-1",
+        start: {
+          streamSid: "stream-1",
+          accountSid: "account",
+          tracks: ["inbound"],
+          customParameters: {
+            callId: "call-123",
+            token: "token-123",
+          },
+          mediaFormat: { encoding: "audio/x-mulaw", sampleRate: 8000, channels: 1 },
+        },
+      },
+      "token-123",
+    );
+
+    expect(session?.callId).toBe("call-123");
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onConnect).toHaveBeenCalledWith("call-123", "stream-1");
   });
 });
