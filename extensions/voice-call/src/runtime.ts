@@ -86,27 +86,33 @@ function resolveProvider(config: VoiceCallConfig): VoiceCallProvider {
           webhookSecurity: config.webhookSecurity,
         },
       );
-    case "voximplant":
+    case "voximplant": {
+      const voximplant = config.voximplant ?? {
+        managementJwtRefreshSkewSec: 60,
+        apiBaseUrl: "https://api.voximplant.com/platform_api",
+        controlTimeoutMs: 10000,
+      };
       return new VoximplantProvider(
         {
-          managementJwt: config.voximplant?.managementJwt,
-          managementAccountId: config.voximplant?.managementAccountId,
-          managementKeyId: config.voximplant?.managementKeyId,
-          managementPrivateKey: config.voximplant?.managementPrivateKey,
-          managementJwtRefreshSkewSec: config.voximplant?.managementJwtRefreshSkewSec,
-          ruleId: config.voximplant?.ruleId,
-          apiBaseUrl: config.voximplant?.apiBaseUrl,
-          webhookSecret: config.voximplant?.webhookSecret,
-          controlTimeoutMs: config.voximplant?.controlTimeoutMs,
+          managementJwt: voximplant.managementJwt,
+          managementAccountId: voximplant.managementAccountId,
+          managementKeyId: voximplant.managementKeyId,
+          managementPrivateKey: voximplant.managementPrivateKey,
+          managementJwtRefreshSkewSec: voximplant.managementJwtRefreshSkewSec,
+          ruleId: voximplant.ruleId,
+          apiBaseUrl: voximplant.apiBaseUrl,
+          webhookSecret: voximplant.webhookSecret,
+          controlTimeoutMs: voximplant.controlTimeoutMs,
         },
         {
           skipVerification: config.skipSignatureVerification,
-          webhookSecret: config.voximplant?.webhookSecret,
-          controlTimeoutMs: config.voximplant?.controlTimeoutMs,
+          webhookSecret: voximplant.webhookSecret,
+          controlTimeoutMs: voximplant.controlTimeoutMs,
           publicUrl: config.publicUrl,
           streamPath: config.streaming?.enabled ? config.streaming.streamPath : undefined,
         },
       );
+    }
     case "mock":
       return new MockProvider();
     default:

@@ -424,18 +424,19 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
 
   // Voximplant
   if (resolved.provider === "voximplant") {
-    resolved.voximplant = resolved.voximplant ?? {};
-    resolved.voximplant.managementJwt =
-      resolved.voximplant.managementJwt ?? process.env.VOXIMPLANT_MANAGEMENT_JWT;
-    resolved.voximplant.managementJwt = normalizeVoximplantManagementJwt(
-      resolved.voximplant.managementJwt,
-    );
-    resolved.voximplant.managementAccountId =
-      resolved.voximplant.managementAccountId ?? process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID;
-    resolved.voximplant.managementKeyId =
-      resolved.voximplant.managementKeyId ?? process.env.VOXIMPLANT_MANAGEMENT_KEY_ID;
+    const voximplant = (resolved.voximplant ??= {
+      managementJwtRefreshSkewSec: 60,
+      apiBaseUrl: "https://api.voximplant.com/platform_api",
+      controlTimeoutMs: 10000,
+    });
+    voximplant.managementJwt = voximplant.managementJwt ?? process.env.VOXIMPLANT_MANAGEMENT_JWT;
+    voximplant.managementJwt = normalizeVoximplantManagementJwt(voximplant.managementJwt);
+    voximplant.managementAccountId =
+      voximplant.managementAccountId ?? process.env.VOXIMPLANT_MANAGEMENT_ACCOUNT_ID;
+    voximplant.managementKeyId =
+      voximplant.managementKeyId ?? process.env.VOXIMPLANT_MANAGEMENT_KEY_ID;
     const envPrivateKeyRaw =
-      resolved.voximplant.managementPrivateKey ?? process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY;
+      voximplant.managementPrivateKey ?? process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY;
     const envPrivateKeyB64 = process.env.VOXIMPLANT_MANAGEMENT_PRIVATE_KEY_B64;
     let resolvedPrivateKey = envPrivateKeyRaw;
     if (!resolvedPrivateKey && envPrivateKeyB64) {
@@ -448,15 +449,13 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
     if (typeof resolvedPrivateKey === "string" && resolvedPrivateKey.includes("\\n")) {
       resolvedPrivateKey = resolvedPrivateKey.replace(/\\n/g, "\n");
     }
-    resolved.voximplant.managementPrivateKey =
-      resolved.voximplant.managementPrivateKey ?? resolvedPrivateKey;
-    resolved.voximplant.ruleId = resolved.voximplant.ruleId ?? process.env.VOXIMPLANT_RULE_ID;
-    resolved.voximplant.apiBaseUrl =
-      resolved.voximplant.apiBaseUrl ??
+    voximplant.managementPrivateKey = voximplant.managementPrivateKey ?? resolvedPrivateKey;
+    voximplant.ruleId = voximplant.ruleId ?? process.env.VOXIMPLANT_RULE_ID;
+    voximplant.apiBaseUrl =
+      voximplant.apiBaseUrl ??
       process.env.VOXIMPLANT_API_BASE_URL ??
       "https://api.voximplant.com/platform_api";
-    resolved.voximplant.webhookSecret =
-      resolved.voximplant.webhookSecret ?? process.env.VOXIMPLANT_WEBHOOK_SECRET;
+    voximplant.webhookSecret = voximplant.webhookSecret ?? process.env.VOXIMPLANT_WEBHOOK_SECRET;
     const controlTimeoutRaw = process.env.VOXIMPLANT_CONTROL_TIMEOUT_MS;
     const parsedControlTimeout = controlTimeoutRaw
       ? Number.parseInt(controlTimeoutRaw, 10)
@@ -465,14 +464,13 @@ export function resolveVoiceCallConfig(config: VoiceCallConfig): VoiceCallConfig
       Number.isFinite(parsedControlTimeout) && parsedControlTimeout > 0
         ? parsedControlTimeout
         : undefined;
-    resolved.voximplant.controlTimeoutMs =
-      resolved.voximplant.controlTimeoutMs ?? envControlTimeout ?? 10000;
+    voximplant.controlTimeoutMs = voximplant.controlTimeoutMs ?? envControlTimeout ?? 10000;
     const refreshSkewRaw = process.env.VOXIMPLANT_MANAGEMENT_JWT_REFRESH_SKEW_SEC;
     const parsedRefreshSkew = refreshSkewRaw ? Number.parseInt(refreshSkewRaw, 10) : Number.NaN;
     const envRefreshSkew =
       Number.isFinite(parsedRefreshSkew) && parsedRefreshSkew >= 0 ? parsedRefreshSkew : undefined;
-    resolved.voximplant.managementJwtRefreshSkewSec =
-      resolved.voximplant.managementJwtRefreshSkewSec ?? envRefreshSkew ?? 60;
+    voximplant.managementJwtRefreshSkewSec =
+      voximplant.managementJwtRefreshSkewSec ?? envRefreshSkew ?? 60;
   }
 
   // Tunnel Config
