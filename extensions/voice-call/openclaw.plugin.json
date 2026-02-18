@@ -122,6 +122,11 @@
       "label": "Enable Streaming",
       "advanced": true
     },
+    "streaming.mode": {
+      "label": "Streaming Mode",
+      "help": "stt-llm-tts (legacy cascade) or realtime-conversation (OpenAI voice brain).",
+      "advanced": true
+    },
     "streaming.openaiApiKey": {
       "label": "OpenAI Realtime API Key",
       "sensitive": true,
@@ -129,6 +134,22 @@
     },
     "streaming.sttModel": {
       "label": "Realtime STT Model",
+      "advanced": true
+    },
+    "streaming.realtimeModel": {
+      "label": "Realtime Conversation Model",
+      "advanced": true
+    },
+    "streaming.assistantVoice": {
+      "label": "Realtime Assistant Voice",
+      "advanced": true
+    },
+    "streaming.assistantInstructions": {
+      "label": "Realtime Assistant Instructions",
+      "advanced": true
+    },
+    "streaming.bargeInOnSpeechStart": {
+      "label": "Barge-in On Speech Start",
       "advanced": true
     },
     "streaming.streamPath": {
@@ -392,6 +413,10 @@
           "enabled": {
             "type": "boolean"
           },
+          "mode": {
+            "type": "string",
+            "enum": ["stt-llm-tts", "realtime-conversation"]
+          },
           "sttProvider": {
             "type": "string",
             "enum": ["openai-realtime"]
@@ -402,6 +427,15 @@
           "sttModel": {
             "type": "string"
           },
+          "realtimeModel": {
+            "type": "string"
+          },
+          "assistantVoice": {
+            "type": "string"
+          },
+          "assistantInstructions": {
+            "type": "string"
+          },
           "silenceDurationMs": {
             "type": "integer",
             "minimum": 1
@@ -410,6 +444,9 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "bargeInOnSpeechStart": {
+            "type": "boolean"
           },
           "streamPath": {
             "type": "string"
