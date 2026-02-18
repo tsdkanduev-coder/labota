@@ -96,6 +96,7 @@ export async function initiateCall(
     processedEventIds: [],
     metadata: {
       ...(initialMessage && { initialMessage }),
+      ...(initialMessage && { objective: initialMessage }),
       mode,
     },
   };

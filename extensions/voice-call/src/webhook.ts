@@ -124,14 +124,6 @@ export class VoiceCallWebhookServer {
       onTranscript: (providerCallId, transcript) => {
         console.log(`[voice-call] Transcript for ${providerCallId}: ${transcript}`);
 
-        // Clear TTS queue on barge-in (user started speaking, interrupt current playback)
-        if (this.provider.name === "twilio") {
-          (this.provider as TwilioProvider).clearTtsQueue(providerCallId);
-        }
-        if (this.provider.name === "voximplant") {
-          (this.provider as VoximplantProvider).clearTtsQueue(providerCallId);
-        }
-
         // Look up our internal call ID from the provider call ID
         const call =
           this.manager.getCallByProviderCallId(providerCallId) ||
@@ -390,6 +382,12 @@ export class VoiceCallWebhookServer {
         from: call.from,
         transcript: call.transcript,
         userMessage,
+        sessionKey: call.sessionKey,
+        objective:
+          (typeof call.metadata?.objective === "string" ? call.metadata.objective.trim() : "") ||
+          (typeof call.metadata?.initialMessage === "string"
+            ? call.metadata.initialMessage.trim()
+            : ""),
       });
 
       if (result.error) {

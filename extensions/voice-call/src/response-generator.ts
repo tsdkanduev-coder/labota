@@ -20,6 +20,10 @@ export type VoiceResponseParams = {
   transcript: Array<{ speaker: "user" | "bot"; text: string }>;
   /** Latest user message */
   userMessage: string;
+  /** Optional session key from originating chat/channel */
+  sessionKey?: string;
+  /** Optional high-level objective from the initiating message */
+  objective?: string;
 };
 
 export type VoiceResponseResult = {
@@ -39,7 +43,8 @@ type SessionEntry = {
 export async function generateVoiceResponse(
   params: VoiceResponseParams,
 ): Promise<VoiceResponseResult> {
-  const { voiceConfig, callId, from, transcript, userMessage, coreConfig } = params;
+  const { voiceConfig, callId, from, transcript, userMessage, coreConfig, sessionKey, objective } =
+    params;
 
   if (!coreConfig) {
     return { text: null, error: "Core config unavailable for voice response" };
@@ -56,9 +61,13 @@ export async function generateVoiceResponse(
   }
   const cfg = coreConfig;
 
-  // Build voice-specific session key based on phone number
+  // Prefer the originating chat session key so voice follows the same task/context.
+  // Fall back to phone-scoped voice session for standalone/inbound calls.
   const normalizedPhone = from.replace(/\D/g, "");
-  const sessionKey = `voice:${normalizedPhone}`;
+  const resolvedSessionKey =
+    typeof sessionKey === "string" && sessionKey.trim()
+      ? sessionKey.trim()
+      : `voice:${normalizedPhone}`;
   const agentId = "main";
 
   // Resolve paths
@@ -72,14 +81,14 @@ export async function generateVoiceResponse(
   // Load or create session entry
   const sessionStore = deps.loadSessionStore(storePath);
   const now = Date.now();
-  let sessionEntry = sessionStore[sessionKey] as SessionEntry | undefined;
+  let sessionEntry = sessionStore[resolvedSessionKey] as SessionEntry | undefined;
 
   if (!sessionEntry) {
     sessionEntry = {
       sessionId: crypto.randomUUID(),
       updatedAt: now,
     };
-    sessionStore[sessionKey] = sessionEntry;
+    sessionStore[resolvedSessionKey] = sessionEntry;
     await deps.saveSessionStore(storePath, sessionStore);
   }
 
@@ -104,14 +113,17 @@ export async function generateVoiceResponse(
   // Build system prompt with conversation history
   const basePrompt =
     voiceConfig.responseSystemPrompt ??
-    `You are ${agentName}, a helpful voice assistant on a phone call. Keep responses brief and conversational (1-2 sentences max). Be natural and friendly. The caller's phone number is ${from}. You have access to tools - use them when helpful.`;
+    `Ты ${agentName}, голосовой ассистент в телефонном разговоре. Отвечай кратко и по делу (1-2 предложения), естественно и вежливо, на языке собеседника (по умолчанию русский). Не теряй цель разговора и доводи задачу до результата. Номер собеседника: ${from}. У тебя есть инструменты — используй их при необходимости.`;
 
   let extraSystemPrompt = basePrompt;
+  if (objective && objective.trim()) {
+    extraSystemPrompt = `${extraSystemPrompt}\n\nЦель звонка:\n${objective.trim()}`;
+  }
   if (transcript.length > 0) {
     const history = transcript
       .map((entry) => `${entry.speaker === "bot" ? "You" : "Caller"}: ${entry.text}`)
       .join("\n");
-    extraSystemPrompt = `${basePrompt}\n\nConversation so far:\n${history}`;
+    extraSystemPrompt = `${extraSystemPrompt}\n\nИстория диалога:\n${history}`;
   }
 
   // Resolve timeout
@@ -121,7 +133,7 @@ export async function generateVoiceResponse(
   try {
     const result = await deps.runEmbeddedPiAgent({
       sessionId,
-      sessionKey,
+      sessionKey: resolvedSessionKey,
       messageProvider: "voice",
       sessionFile,
       workspaceDir,

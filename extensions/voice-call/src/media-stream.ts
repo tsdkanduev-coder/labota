@@ -653,8 +653,16 @@ export class MediaStreamHandler {
    * Clear TTS queue and interrupt current playback (barge-in).
    */
   clearTtsQueue(streamSid: string): void {
-    const queue = this.getTtsQueue(streamSid);
-    queue.length = 0;
+    const queue = this.ttsQueues.get(streamSid);
+    const hasQueued = Boolean(queue && queue.length > 0);
+    const hasActive = this.ttsActiveControllers.has(streamSid);
+    if (!hasQueued && !hasActive) {
+      return;
+    }
+
+    if (queue) {
+      queue.length = 0;
+    }
     this.ttsActiveControllers.get(streamSid)?.abort();
     this.clearAudio(streamSid);
   }
