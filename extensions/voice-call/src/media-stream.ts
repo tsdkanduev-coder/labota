@@ -110,7 +110,15 @@ export class MediaStreamHandler {
           return;
         }
 
-        const message = JSON.parse(this.toTextMessage(data)) as TwilioMediaMessage;
+        const rawText = this.toTextMessage(data);
+        const message = JSON.parse(rawText) as TwilioMediaMessage;
+
+        // Log first message and any start events for debugging VoxEngine protocol
+        if (message.event === "start" || !session) {
+          console.log(
+            `[MediaStream] Received event="${message.event}" raw=${rawText.slice(0, 500)}`,
+          );
+        }
 
         switch (message.event) {
           case "connected":
@@ -265,15 +273,35 @@ export class MediaStreamHandler {
   private extractCallId(message: TwilioMediaMessage): string {
     const startRecord = this.toRecord(message.start);
     const rootRecord = this.toRecord(message);
+
+    // VoxEngine may send customParameters as a JSON string rather than an object —
+    // parse it if needed so callId can be extracted.
+    const parseIfString = (v: unknown): Record<string, unknown> | undefined => {
+      if (typeof v === "string" && v.startsWith("{")) {
+        try {
+          return JSON.parse(v) as Record<string, unknown>;
+        } catch {
+          return undefined;
+        }
+      }
+      return this.toRecord(v);
+    };
+
     const customRecord =
-      this.toRecord(startRecord?.customParameters) ??
-      this.toRecord(startRecord?.custom_parameters) ??
-      this.toRecord(startRecord?.customData) ??
-      this.toRecord(startRecord?.custom_data) ??
-      this.toRecord(rootRecord?.customParameters) ??
-      this.toRecord(rootRecord?.custom_parameters) ??
-      this.toRecord(rootRecord?.customData) ??
-      this.toRecord(rootRecord?.custom_data);
+      parseIfString(startRecord?.customParameters) ??
+      parseIfString(startRecord?.custom_parameters) ??
+      parseIfString(startRecord?.customData) ??
+      parseIfString(startRecord?.custom_data) ??
+      parseIfString(rootRecord?.customParameters) ??
+      parseIfString(rootRecord?.custom_parameters) ??
+      parseIfString(rootRecord?.customData) ??
+      parseIfString(rootRecord?.custom_data);
+
+    console.log(
+      `[MediaStream] extractCallId: customRecord=${JSON.stringify(customRecord)}, ` +
+        `startKeys=${startRecord ? Object.keys(startRecord).join(",") : "none"}, ` +
+        `rootKeys=${rootRecord ? Object.keys(rootRecord).join(",") : "none"}`,
+    );
 
     return (
       this.pickString(customRecord, [
