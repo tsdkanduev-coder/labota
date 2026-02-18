@@ -10,6 +10,8 @@ let runtimeStub: {
     endCall: ReturnType<typeof vi.fn>;
     getCall: ReturnType<typeof vi.fn>;
     getCallByProviderCallId: ReturnType<typeof vi.fn>;
+    getCallHistory: ReturnType<typeof vi.fn>;
+    setOnCallEndedHook: ReturnType<typeof vi.fn>;
   };
   stop: ReturnType<typeof vi.fn>;
 };
@@ -54,6 +56,22 @@ function setup(config: Record<string, unknown>): Registered {
   return { methods, tools };
 }
 
+function resolveVoiceCallTool(
+  registered: unknown,
+  sessionKey = "agent:main:telegram:dm:test-user",
+): {
+  execute: (id: string, params: unknown) => Promise<unknown>;
+} {
+  if (typeof registered === "function") {
+    return registered({
+      config: {},
+      sessionKey,
+      messageChannel: "telegram",
+    }) as { execute: (id: string, params: unknown) => Promise<unknown> };
+  }
+  return registered as { execute: (id: string, params: unknown) => Promise<unknown> };
+}
+
 describe("voice-call plugin", () => {
   beforeEach(() => {
     runtimeStub = {
@@ -68,6 +86,10 @@ describe("voice-call plugin", () => {
         endCall: vi.fn(async () => ({ success: true })),
         getCall: vi.fn((id: string) => (id === "call-1" ? { callId: "call-1" } : undefined)),
         getCallByProviderCallId: vi.fn(() => undefined),
+        getCallHistory: vi.fn(async () => [
+          { callId: "call-1", sessionKey: "agent:main:telegram:dm:test-user" },
+        ]),
+        setOnCallEndedHook: vi.fn(),
       },
       stop: vi.fn(async () => {}),
     };
@@ -108,9 +130,7 @@ describe("voice-call plugin", () => {
 
   it("tool get_status returns json payload", async () => {
     const { tools } = setup({ provider: "mock" });
-    const tool = tools[0] as {
-      execute: (id: string, params: unknown) => Promise<unknown>;
-    };
+    const tool = resolveVoiceCallTool(tools[0]);
     const result = (await tool.execute("id", {
       action: "get_status",
       callId: "call-1",
@@ -120,13 +140,41 @@ describe("voice-call plugin", () => {
 
   it("legacy tool status without sid returns error payload", async () => {
     const { tools } = setup({ provider: "mock" });
-    const tool = tools[0] as {
-      execute: (id: string, params: unknown) => Promise<unknown>;
-    };
+    const tool = resolveVoiceCallTool(tools[0]);
     const result = (await tool.execute("id", { mode: "status" })) as {
       details: { error?: unknown };
     };
     expect(String(result.details.error)).toContain("sid required");
+  });
+
+  it("tool initiate_call binds call to current session", async () => {
+    const { tools } = setup({ provider: "mock" });
+    const tool = resolveVoiceCallTool(tools[0], "agent:main:telegram:dm:user-42");
+    await tool.execute("id", {
+      action: "initiate_call",
+      to: "+15550001111",
+      message: "hello",
+    });
+    expect(runtimeStub.manager.initiateCall).toHaveBeenCalledWith(
+      "+15550001111",
+      "agent:main:telegram:dm:user-42",
+      expect.any(Object),
+    );
+  });
+
+  it("tool get_call_history is scoped by session by default", async () => {
+    runtimeStub.manager.getCallHistory.mockResolvedValue([
+      { callId: "call-a", sessionKey: "agent:main:telegram:dm:test-user" },
+      { callId: "call-b", sessionKey: "agent:main:telegram:dm:other-user" },
+      { callId: "call-a", sessionKey: "agent:main:telegram:dm:test-user" },
+    ]);
+    const { tools } = setup({ provider: "mock" });
+    const tool = resolveVoiceCallTool(tools[0], "agent:main:telegram:dm:test-user");
+    const result = (await tool.execute("id", {
+      action: "get_call_history",
+      limit: 10,
+    })) as { details: { calls?: Array<{ callId: string }> } };
+    expect(result.details.calls?.map((call) => call.callId)).toEqual(["call-a"]);
   });
 
   it("CLI start prints JSON", async () => {

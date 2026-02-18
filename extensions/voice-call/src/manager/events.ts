@@ -204,6 +204,7 @@ export function processEvent(ctx: EventContext, event: NormalizedEvent): void {
       transitionState(call, event.reason as CallState);
       clearMaxDurationTimer(ctx, call.callId);
       rejectTranscriptWaiter(ctx, call.callId, `Call ended: ${event.reason}`);
+      ctx.onCallEnded?.(call);
       ctx.activeCalls.delete(call.callId);
       if (call.providerCallId) {
         ctx.providerCallIdMap.delete(call.providerCallId);
@@ -217,6 +218,7 @@ export function processEvent(ctx: EventContext, event: NormalizedEvent): void {
         transitionState(call, "error");
         clearMaxDurationTimer(ctx, call.callId);
         rejectTranscriptWaiter(ctx, call.callId, `Call error: ${event.error}`);
+        ctx.onCallEnded?.(call);
         ctx.activeCalls.delete(call.callId);
         if (call.providerCallId) {
           ctx.providerCallIdMap.delete(call.providerCallId);

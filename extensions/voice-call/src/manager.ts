@@ -56,6 +56,7 @@ export class CallManager {
     }
   >();
   private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
+  private onCallEndedHook: ((call: CallRecord) => void) | null = null;
 
   constructor(config: VoiceCallConfig, storePath?: string) {
     this.config = config;
@@ -76,6 +77,13 @@ export class CallManager {
     this.providerCallIdMap = persisted.providerCallIdMap;
     this.processedEventIds = persisted.processedEventIds;
     this.rejectedProviderCallIds = persisted.rejectedProviderCallIds;
+  }
+
+  /**
+   * Register a hook to be called when a call transitions to a terminal state.
+   */
+  setOnCallEndedHook(hook: ((call: CallRecord) => void) | null): void {
+    this.onCallEndedHook = hook;
   }
 
   /**
@@ -141,6 +149,9 @@ export class CallManager {
       maxDurationTimers: this.maxDurationTimers,
       onCallAnswered: (call) => {
         this.maybeSpeakInitialMessageOnAnswered(call);
+      },
+      onCallEnded: (call) => {
+        this.onCallEndedHook?.(call);
       },
     };
   }
