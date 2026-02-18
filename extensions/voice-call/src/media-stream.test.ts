@@ -138,6 +138,53 @@ describe("MediaStreamHandler call identity", () => {
     expect(onConnect).toHaveBeenCalledWith("call-123", "stream-1");
   });
 
+  it("reflects provider start encoding in reply start event", async () => {
+    const handler = new MediaStreamHandler({
+      sttProvider: createStubSttProvider(),
+      shouldAcceptStream: ({ callId }) => callId === "call-enc",
+    });
+
+    type HandleStart = (
+      ws: {
+        close: (code?: number, reason?: string) => void;
+        readyState: number;
+        send: (msg: string) => void;
+      },
+      message: unknown,
+      streamToken?: string,
+    ) => Promise<{ callId: string } | null>;
+    const handleStart = (handler as unknown as { handleStart: HandleStart }).handleStart.bind(
+      handler,
+    );
+
+    const closeSpy = vi.fn();
+    const sendSpy = vi.fn();
+    await handleStart(
+      { close: closeSpy, readyState: 1, send: sendSpy },
+      {
+        event: "start",
+        streamSid: "stream-enc",
+        start: {
+          streamSid: "stream-enc",
+          accountSid: "account",
+          tracks: ["inbound"],
+          customParameters: { callId: "call-enc" },
+          mediaFormat: { encoding: "ULAW", sampleRate: 8000 },
+        },
+      },
+      undefined,
+    );
+
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(sendSpy.mock.calls[0][0] as string) as {
+      event?: string;
+      start?: { mediaFormat?: { encoding?: string } };
+    };
+    expect(sent.event).toBe("start");
+    expect(sent.start?.mediaFormat?.encoding).toBe("ULAW");
+  });
+
   it("resolves call ID from stream token when start payload has no call identifiers", async () => {
     const onConnect = vi.fn();
     const handler = new MediaStreamHandler({

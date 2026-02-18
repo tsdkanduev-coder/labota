@@ -49,6 +49,7 @@ interface StreamSession {
   ws: WebSocket;
   sttSession: RealtimeSTTSession;
   transport: "twilio-json" | "raw";
+  startEncoding: string;
 }
 
 type TtsQueueEntry = {
@@ -176,6 +177,7 @@ export class MediaStreamHandler {
     // falling back to query string token. Twilio strips query params from WebSocket
     // URLs but reliably delivers <Parameter> values in customParameters.
     const startRecord = this.toRecord(message.start);
+    const startMediaRecord = this.toRecord(startRecord?.mediaFormat);
     const customRecord =
       this.toRecord(startRecord?.customParameters) ??
       this.toRecord(startRecord?.custom_parameters) ??
@@ -201,6 +203,10 @@ export class MediaStreamHandler {
         "auth_token",
       ]) ||
       streamToken;
+    const startEncoding =
+      this.pickString(startMediaRecord, ["encoding"]) ??
+      this.pickString(startRecord, ["encoding"]) ??
+      "audio/x-mulaw";
 
     if (!callId && effectiveToken && this.config.resolveCallIdByToken) {
       const resolvedCallId = this.config.resolveCallIdByToken(effectiveToken);
@@ -229,6 +235,7 @@ export class MediaStreamHandler {
       callId,
       streamSid,
       transport: "twilio-json",
+      startEncoding,
       connectLogPrefix: "[MediaStream] Stream started",
     });
   }
@@ -266,6 +273,7 @@ export class MediaStreamHandler {
       callId,
       streamSid,
       transport: "raw",
+      startEncoding: "ULAW",
       connectLogPrefix: "[MediaStream] Raw stream started",
     });
   }
@@ -378,9 +386,10 @@ export class MediaStreamHandler {
     callId: string;
     streamSid: string;
     transport: "twilio-json" | "raw";
+    startEncoding: string;
     connectLogPrefix: string;
   }): Promise<StreamSession> {
-    const { ws, callId, streamSid, transport, connectLogPrefix } = params;
+    const { ws, callId, streamSid, transport, startEncoding, connectLogPrefix } = params;
     console.log(`${connectLogPrefix}: ${streamSid} (call: ${callId})`);
 
     const sttSession = this.config.sttProvider.createSession();
@@ -403,21 +412,22 @@ export class MediaStreamHandler {
       ws,
       sttSession,
       transport,
+      startEncoding,
     };
 
     this.sessions.set(streamSid, session);
 
     // VoxEngine ws.sendMediaTo(call) requires a JSON "start" event from the
     // server before it will begin playing incoming audio to the call.
-    // The encoding MUST be "audio/x-mulaw" (per VoxEngine docs) so that
-    // VoxEngine decodes our mu-law chunks correctly.
+    // Reflect provider encoding from its own "start" packet (ULAW for VoxEngine,
+    // audio/x-mulaw for Twilio-compatible streams) to avoid decoder mismatch.
     if (transport === "twilio-json" && ws.readyState === WebSocket.OPEN) {
       const startEvent = JSON.stringify({
         event: "start",
         sequenceNumber: 0,
         start: {
           mediaFormat: {
-            encoding: "audio/x-mulaw",
+            encoding: startEncoding,
             sampleRate: 8000,
             channels: 1,
           },
