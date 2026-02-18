@@ -387,6 +387,8 @@ export class VoiceCallWebhookServer {
           (typeof call.metadata?.initialMessage === "string"
             ? call.metadata.initialMessage.trim()
             : ""),
+        context: typeof call.metadata?.context === "string" ? call.metadata.context.trim() : "",
+        language: typeof call.metadata?.language === "string" ? call.metadata.language.trim() : "",
       });
 
       if (result.error) {

@@ -132,6 +132,9 @@ const VoiceCallToolSchema = Type.Union([
     action: Type.Literal("initiate_call"),
     to: Type.Optional(Type.String({ description: "Call target" })),
     message: Type.String({ description: "Intro message" }),
+    objective: Type.Optional(Type.String({ description: "Call objective in plain language" })),
+    context: Type.Optional(Type.String({ description: "Additional context from chat session" })),
+    language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
     mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
   }),
   Type.Object({
@@ -242,21 +245,43 @@ const voiceCallPlugin = {
           return;
         }
         const reason = call.endReason ?? call.state;
-        const summary =
-          call.transcript.length > 0
-            ? call.transcript
-                .slice(-4)
-                .map((entry) => `${entry.speaker}: ${entry.text}`)
-                .join("\n")
-            : "no transcript captured";
+        const transcript = call.transcript.slice(-120).map((entry) => ({
+          speaker: entry.speaker,
+          text: entry.text,
+          timestamp: entry.timestamp,
+        }));
+        const objective =
+          typeof call.metadata?.objective === "string" ? call.metadata.objective.trim() : "";
+        const context =
+          typeof call.metadata?.context === "string" ? call.metadata.context.trim() : "";
+        const startedAtIso = new Date(call.startedAt).toISOString();
+        const endedAtIso = new Date(call.endedAt ?? Date.now()).toISOString();
+        const durationSec = Math.max(
+          0,
+          Math.round(((call.endedAt ?? Date.now()) - call.startedAt) / 1000),
+        );
+        const payload = {
+          type: "voice_call_outcome",
+          callId: call.callId,
+          providerCallId: call.providerCallId ?? null,
+          from: call.from,
+          to: call.to,
+          state: call.state,
+          reason,
+          startedAt: startedAtIso,
+          endedAt: endedAtIso,
+          durationSec,
+          objective: objective || null,
+          context: context || null,
+          transcriptCount: call.transcript.length,
+          transcript,
+        };
         const text = [
-          "Voice call finished.",
-          `callId: ${call.callId}`,
-          `to: ${call.to}`,
-          `reason: ${reason}`,
-          "Use voice_call action=get_call_history to inspect details and report the result to the user.",
-          `recent transcript:\n${summary}`,
-        ].join("\n");
+          "VOICE_CALL_COMPLETED",
+          "Проанализируй итог звонка и обязательно отправь пользователю в текущий Telegram-чат четкий результат: выполнена ли цель, что подтверждено, какие есть недостающие детали, и следующий шаг.",
+          "Если данных в транскрипте недостаточно — прямо так и скажи и предложи короткий follow-up.",
+          JSON.stringify(payload, null, 2),
+        ].join("\n\n");
         try {
           api.runtime.system.enqueueSystemEvent(text, {
             sessionKey,
@@ -297,8 +322,23 @@ const voiceCallPlugin = {
           }
           const mode =
             params?.mode === "notify" || params?.mode === "conversation" ? params.mode : undefined;
+          const objective =
+            typeof params?.objective === "string" && params.objective.trim()
+              ? params.objective.trim()
+              : undefined;
+          const context =
+            typeof params?.context === "string" && params.context.trim()
+              ? params.context.trim()
+              : undefined;
+          const language =
+            typeof params?.language === "string" && params.language.trim()
+              ? params.language.trim()
+              : undefined;
           const result = await rt.manager.initiateCall(to, undefined, {
             message,
+            objective,
+            context,
+            language,
             mode,
           });
           if (!result.success) {
@@ -418,8 +458,23 @@ const voiceCallPlugin = {
             return;
           }
           const rt = await ensureRuntime();
+          const objective =
+            typeof params?.objective === "string" && params.objective.trim()
+              ? params.objective.trim()
+              : undefined;
+          const context =
+            typeof params?.context === "string" && params.context.trim()
+              ? params.context.trim()
+              : undefined;
+          const language =
+            typeof params?.language === "string" && params.language.trim()
+              ? params.language.trim()
+              : undefined;
           const result = await rt.manager.initiateCall(to, undefined, {
             message: message || undefined,
+            objective,
+            context,
+            language,
           });
           if (!result.success) {
             respond(false, { error: result.error || "initiate failed" });
@@ -465,8 +520,23 @@ const voiceCallPlugin = {
                   if (!to) {
                     throw new Error("to required");
                   }
+                  const objective =
+                    typeof params.objective === "string" && params.objective.trim()
+                      ? params.objective.trim()
+                      : undefined;
+                  const context =
+                    typeof params.context === "string" && params.context.trim()
+                      ? params.context.trim()
+                      : undefined;
+                  const language =
+                    typeof params.language === "string" && params.language.trim()
+                      ? params.language.trim()
+                      : undefined;
                   const result = await rt.manager.initiateCall(to, sessionKey, {
                     message,
+                    objective,
+                    context,
+                    language,
                     mode:
                       params.mode === "notify" || params.mode === "conversation"
                         ? params.mode
@@ -570,6 +640,18 @@ const voiceCallPlugin = {
               message:
                 typeof params.message === "string" && params.message.trim()
                   ? params.message.trim()
+                  : undefined,
+              objective:
+                typeof params.objective === "string" && params.objective.trim()
+                  ? params.objective.trim()
+                  : undefined,
+              context:
+                typeof params.context === "string" && params.context.trim()
+                  ? params.context.trim()
+                  : undefined,
+              language:
+                typeof params.language === "string" && params.language.trim()
+                  ? params.language.trim()
                   : undefined,
             });
             if (!result.success) {

@@ -58,7 +58,10 @@ export async function initiateCall(
 ): Promise<{ callId: CallId; success: boolean; error?: string }> {
   const opts: OutboundCallOptions =
     typeof options === "string" ? { message: options } : (options ?? {});
-  const initialMessage = opts.message;
+  const initialMessage = opts.message?.trim();
+  const objective = opts.objective?.trim() || initialMessage;
+  const context = opts.context?.trim();
+  const language = opts.language?.trim();
   const mode = opts.mode ?? ctx.config.outbound.defaultMode;
 
   if (!ctx.provider) {
@@ -96,7 +99,9 @@ export async function initiateCall(
     processedEventIds: [],
     metadata: {
       ...(initialMessage && { initialMessage }),
-      ...(initialMessage && { objective: initialMessage }),
+      ...(objective && { objective }),
+      ...(context && { context }),
+      ...(language && { language }),
       mode,
     },
   };
@@ -203,17 +208,17 @@ export async function speakInitialMessage(
     return;
   }
 
-  // Clear so we don't speak it again if the provider reconnects.
-  if (call.metadata) {
-    delete call.metadata.initialMessage;
-    persistCallRecord(ctx.storePath, call);
-  }
-
   console.log(`[voice-call] Speaking initial message for call ${call.callId} (mode: ${mode})`);
   const result = await speak(ctx, call.callId, initialMessage);
   if (!result.success) {
     console.warn(`[voice-call] Failed to speak initial message: ${result.error}`);
     return;
+  }
+
+  // Clear only after successful playback kickoff so we can retry on transient failures.
+  if (call.metadata) {
+    delete call.metadata.initialMessage;
+    persistCallRecord(ctx.storePath, call);
   }
 
   if (mode === "notify") {
