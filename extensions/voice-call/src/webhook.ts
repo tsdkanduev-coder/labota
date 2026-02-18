@@ -155,12 +155,11 @@ export class VoiceCallWebhookServer {
         }
       },
       onSpeechStart: (providerCallId) => {
-        if (this.provider.name === "twilio") {
-          (this.provider as TwilioProvider).clearTtsQueue(providerCallId);
-        }
-        if (this.provider.name === "voximplant") {
-          (this.provider as VoximplantProvider).clearTtsQueue(providerCallId);
-        }
+        // Intentionally no auto-clear on speech start.
+        // In PSTN calls, server VAD may trigger on line noise/echo and would
+        // repeatedly cancel queued TTS before objective/intro is spoken.
+        // We keep interruption control at higher-level turn handling.
+        void providerCallId;
       },
       onPartialTranscript: (callId, partial) => {
         console.log(`[voice-call] Partial for ${callId}: ${partial}`);

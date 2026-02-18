@@ -115,7 +115,10 @@ export async function generateVoiceResponse(
     voiceConfig.responseSystemPrompt ??
     `Ты ${agentName}, голосовой ассистент в телефонном разговоре. Отвечай кратко и по делу (1-2 предложения), естественно и вежливо, на языке собеседника (по умолчанию русский). Не теряй цель разговора и доводи задачу до результата. Номер собеседника: ${from}. У тебя есть инструменты — используй их при необходимости.`;
 
-  let extraSystemPrompt = basePrompt;
+  const languageAndFocusPolicy =
+    "Критично: в этом проекте основной язык — русский. Отвечай по-русски, если только собеседник явно не просит другой язык. Не забывай исходную цель звонка и не начинай диалог с нуля без необходимости.";
+
+  let extraSystemPrompt = `${basePrompt}\n\n${languageAndFocusPolicy}`;
   if (objective && objective.trim()) {
     extraSystemPrompt = `${extraSystemPrompt}\n\nЦель звонка:\n${objective.trim()}`;
   }
