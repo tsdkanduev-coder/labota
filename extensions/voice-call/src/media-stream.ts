@@ -407,25 +407,13 @@ export class MediaStreamHandler {
 
     this.sessions.set(streamSid, session);
 
-    // VoxEngine ws.sendMediaTo(call) requires a JSON "start" event from the
-    // server before it will begin playing incoming audio to the call.
-    // Send it immediately so TTS audio can be played as soon as it arrives.
-    if (transport === "twilio-json" && ws.readyState === WebSocket.OPEN) {
-      const startAck = JSON.stringify({
-        event: "start",
-        sequenceNumber: 0,
-        start: {
-          mediaFormat: {
-            encoding: "audio/x-mulaw",
-            sampleRate: 8000,
-            channels: 1,
-          },
-          customParameters: {},
-        },
-      });
-      ws.send(startAck);
-      console.log(`[MediaStream] Sent start ack to stream ${streamSid}`);
-    }
+    // VoxEngine ws.sendMediaTo(call) picks up encoding from its own
+    // {encoding: ULAW} parameter, NOT from a start event.  Sending a Twilio-
+    // style start ack confused VoxEngine into treating incoming audio as PCM16
+    // (default) which caused loud noise.  Do NOT send a start event — just
+    // begin sending media events directly.  VoxEngine starts relaying
+    // incoming audio once it receives the first media event.
+    console.log(`[MediaStream] Session ready for stream ${streamSid} (transport=${transport})`);
 
     this.config.onConnect?.(callId, streamSid);
 
@@ -576,10 +564,19 @@ export class MediaStreamHandler {
         `[MediaStream] sendAudio chunk #${count} (${muLawAudio.length}B) to ${streamSid}`,
       );
     }
+    // VoxEngine ws.sendMediaTo(call) expects sequenceNumber, media.chunk and
+    // media.timestamp fields.  Twilio ignores extra fields so this is safe for
+    // both providers.
+    const timestampMs = Math.round((count - 1) * 20); // 20 ms per 160-byte chunk
     this.sendToStream(streamSid, {
       event: "media",
+      sequenceNumber: count,
       streamSid,
-      media: { payload: muLawAudio.toString("base64") },
+      media: {
+        chunk: count,
+        timestamp: timestampMs,
+        payload: muLawAudio.toString("base64"),
+      },
     });
   }
 
