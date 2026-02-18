@@ -40,6 +40,10 @@ class FakeProvider implements VoiceCallProvider {
   async stopListening(_input: StopListeningInput): Promise<void> {}
 }
 
+class FakeVoximplantProvider extends FakeProvider {
+  readonly name = "voximplant" as const;
+}
+
 describe("CallManager", () => {
   it("upgrades providerCallId mapping when provider ID changes", async () => {
     const config = VoiceCallConfigSchema.parse({
@@ -104,6 +108,44 @@ describe("CallManager", () => {
 
     expect(provider.playTtsCalls).toHaveLength(1);
     expect(provider.playTtsCalls[0]?.text).toBe("Hello there");
+  });
+
+  it("defers initial message on answered for Voximplant when streaming is enabled", async () => {
+    const config = VoiceCallConfigSchema.parse({
+      enabled: true,
+      provider: "voximplant",
+      fromNumber: "+15550000000",
+      streaming: {
+        enabled: true,
+        streamPath: "/voice/stream",
+      },
+    });
+
+    const storePath = path.join(os.tmpdir(), `openclaw-voice-call-test-${Date.now()}`);
+    const provider = new FakeVoximplantProvider();
+    const manager = new CallManager(config, storePath);
+    manager.initialize(provider, "https://example.com/voice/webhook");
+
+    const { callId, success } = await manager.initiateCall("+15550000003", undefined, {
+      message: "Hello over stream",
+      mode: "notify",
+    });
+    expect(success).toBe(true);
+
+    manager.processEvent({
+      id: "evt-vox-answered",
+      type: "call.answered",
+      callId,
+      providerCallId: "vox-call-uuid",
+      timestamp: Date.now(),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(provider.playTtsCalls).toHaveLength(0);
+
+    await manager.speakInitialMessage("vox-call-uuid");
+    expect(provider.playTtsCalls).toHaveLength(1);
+    expect(provider.playTtsCalls[0]?.text).toBe("Hello over stream");
   });
 
   it("rejects inbound calls with missing caller ID when allowlist enabled", () => {

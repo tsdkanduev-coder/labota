@@ -170,6 +170,12 @@ export class CallManager {
       return;
     }
 
+    // Voximplant with media streaming should speak only after stream connect,
+    // otherwise we race and fall back to control-url speak before stream TTS is ready.
+    if (this.provider.name === "voximplant" && this.config.streaming?.enabled) {
+      return;
+    }
+
     void this.speakInitialMessage(call.providerCallId);
   }
 
