@@ -12,6 +12,7 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
   OpenAIRealtimeSTTProvider,
+  RealtimeConversationContext,
   RealtimeSTTSession,
 } from "./providers/stt-openai-realtime.js";
 
@@ -21,6 +22,8 @@ import type {
 export interface MediaStreamConfig {
   /** STT provider for transcription */
   sttProvider: OpenAIRealtimeSTTProvider;
+  /** Pipeline mode */
+  mode?: "stt-llm-tts" | "realtime-conversation";
   /**
    * Resolve call ID from a stream auth token when provider "start" payload
    * does not include call identifiers.
@@ -36,6 +39,14 @@ export interface MediaStreamConfig {
   onConnect?: (callId: string, streamSid: string) => void;
   /** Callback when speech starts (barge-in) */
   onSpeechStart?: (callId: string) => void;
+  /** Callback when assistant emits final transcript (realtime-conversation mode) */
+  onAssistantTranscript?: (callId: string, transcript: string) => void;
+  /** Callback when assistant emits partial transcript (realtime-conversation mode) */
+  onAssistantPartialTranscript?: (callId: string, partial: string) => void;
+  /** Resolve per-call conversation context (realtime-conversation mode) */
+  getConversationContext?: (callId: string) => RealtimeConversationContext | undefined;
+  /** When true, clear outbound audio as soon as speech starts */
+  bargeInOnSpeechStart?: boolean;
   /** Callback when stream disconnects */
   onDisconnect?: (callId: string) => void;
 }
@@ -392,7 +403,37 @@ export class MediaStreamHandler {
     const { ws, callId, streamSid, transport, startEncoding, connectLogPrefix } = params;
     console.log(`${connectLogPrefix}: ${streamSid} (call: ${callId})`);
 
-    const sttSession = this.config.sttProvider.createSession();
+    const conversationContext =
+      this.config.mode === "realtime-conversation"
+        ? this.config.getConversationContext?.(callId)
+        : undefined;
+    const sttSession = this.config.sttProvider.createSession({
+      conversation: conversationContext,
+      onAssistantAudio:
+        this.config.mode === "realtime-conversation"
+          ? (audio) => {
+              // Realtime models may emit variable-size chunks; normalize to telephony frame size.
+              if (audio.length <= 160) {
+                this.sendAudio(streamSid, audio);
+                return;
+              }
+              for (let offset = 0; offset < audio.length; offset += 160) {
+                const chunk = audio.subarray(offset, Math.min(offset + 160, audio.length));
+                if (chunk.length > 0) {
+                  this.sendAudio(streamSid, chunk);
+                }
+              }
+            }
+          : undefined,
+      onAssistantTranscript:
+        this.config.mode === "realtime-conversation"
+          ? (transcript) => this.config.onAssistantTranscript?.(callId, transcript)
+          : undefined,
+      onAssistantPartialTranscript:
+        this.config.mode === "realtime-conversation"
+          ? (partial) => this.config.onAssistantPartialTranscript?.(callId, partial)
+          : undefined,
+    });
 
     sttSession.onPartial((partial) => {
       this.config.onPartialTranscript?.(callId, partial);
@@ -403,6 +444,10 @@ export class MediaStreamHandler {
     });
 
     sttSession.onSpeechStart(() => {
+      if (this.config.bargeInOnSpeechStart) {
+        this.clearTtsQueue(streamSid);
+        this.clearAudio(streamSid);
+      }
       this.config.onSpeechStart?.(callId);
     });
 

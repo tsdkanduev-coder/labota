@@ -15,7 +15,10 @@ import type { TwilioProvider } from "./providers/twilio.js";
 import type { VoximplantProvider } from "./providers/voximplant.js";
 import type { NormalizedEvent, WebhookContext } from "./types.js";
 import { MediaStreamHandler } from "./media-stream.js";
-import { OpenAIRealtimeSTTProvider } from "./providers/stt-openai-realtime.js";
+import {
+  OpenAIRealtimeSTTProvider,
+  type RealtimeConversationContext,
+} from "./providers/stt-openai-realtime.js";
 
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 
@@ -68,15 +71,27 @@ export class VoiceCallWebhookServer {
       return;
     }
 
+    const conversationMode = this.config.streaming?.mode === "realtime-conversation";
+    const bargeInOnSpeechStart =
+      this.config.streaming?.bargeInOnSpeechStart ?? conversationMode ?? false;
+    const model = conversationMode
+      ? this.config.streaming?.realtimeModel
+      : this.config.streaming?.sttModel;
+
     const sttProvider = new OpenAIRealtimeSTTProvider({
       apiKey,
-      model: this.config.streaming?.sttModel,
+      mode: conversationMode ? "conversation" : "transcription",
+      model,
       silenceDurationMs: this.config.streaming?.silenceDurationMs,
       vadThreshold: this.config.streaming?.vadThreshold,
+      assistantVoice: this.config.streaming?.assistantVoice,
+      assistantInstructions: this.config.streaming?.assistantInstructions,
     });
 
     const streamConfig: MediaStreamConfig = {
       sttProvider,
+      mode: conversationMode ? "realtime-conversation" : "stt-llm-tts",
+      bargeInOnSpeechStart,
       resolveCallIdByToken: (token) => {
         if (!token) {
           return undefined;
@@ -145,9 +160,22 @@ export class VoiceCallWebhookServer {
         };
         this.manager.processEvent(event);
 
+        if (call.direction === "outbound" && this.isCarrierAnnouncementTranscript(transcript)) {
+          console.warn(
+            `[voice-call] Carrier/auto-attendant phrase detected for ${call.callId}; ending call to avoid self-dialog.`,
+          );
+          void this.manager.endCall(call.callId).catch((err) => {
+            console.warn(`[voice-call] Failed to end call after carrier phrase:`, err);
+          });
+          return;
+        }
+
         // Auto-respond in conversation mode (inbound always, outbound if mode is conversation)
         const callMode = call.metadata?.mode as string | undefined;
         const shouldRespond = call.direction === "inbound" || callMode === "conversation";
+        if (conversationMode) {
+          return;
+        }
         if (shouldRespond) {
           this.handleInboundResponse(call.callId, transcript).catch((err) => {
             console.warn(`[voice-call] Failed to auto-respond:`, err);
@@ -155,15 +183,34 @@ export class VoiceCallWebhookServer {
         }
       },
       onSpeechStart: (providerCallId) => {
-        // Intentionally no auto-clear on speech start.
-        // In PSTN calls, server VAD may trigger on line noise/echo and would
-        // repeatedly cancel queued TTS before objective/intro is spoken.
-        // We keep interruption control at higher-level turn handling.
-        void providerCallId;
+        console.log(`[voice-call] Speech start detected for ${providerCallId}`);
       },
       onPartialTranscript: (callId, partial) => {
         console.log(`[voice-call] Partial for ${callId}: ${partial}`);
       },
+      onAssistantTranscript: (providerCallId, transcript) => {
+        const call =
+          this.manager.getCallByProviderCallId(providerCallId) ||
+          this.manager.getCall(providerCallId);
+        if (!call) {
+          return;
+        }
+        const text = transcript.trim();
+        if (!text) {
+          return;
+        }
+        const event: NormalizedEvent = {
+          id: `stream-assistant-${Date.now()}`,
+          type: "call.speaking",
+          callId: call.callId,
+          providerCallId,
+          timestamp: Date.now(),
+          text,
+        };
+        this.manager.processEvent(event);
+      },
+      getConversationContext: (providerCallId) =>
+        conversationMode ? this.buildRealtimeConversationContext(providerCallId) : undefined,
       onConnect: (callId, streamSid) => {
         console.log(`[voice-call] Media stream connected: ${callId} -> ${streamSid}`);
         // Register stream with provider for TTS routing
@@ -172,6 +219,11 @@ export class VoiceCallWebhookServer {
         }
         if (this.provider.name === "voximplant") {
           (this.provider as VoximplantProvider).registerCallStream(callId, streamSid);
+        }
+
+        if (conversationMode) {
+          console.log(`[voice-call] Realtime conversation mode active for ${callId}`);
+          return;
         }
 
         // Speak initial message if one was provided when call was initiated
@@ -195,6 +247,63 @@ export class VoiceCallWebhookServer {
 
     this.mediaStreamHandler = new MediaStreamHandler(streamConfig);
     console.log("[voice-call] Media streaming initialized");
+  }
+
+  private buildRealtimeConversationContext(providerCallId: string): RealtimeConversationContext {
+    const call =
+      this.manager.getCallByProviderCallId(providerCallId) || this.manager.getCall(providerCallId);
+    const objective =
+      typeof call?.metadata?.objective === "string" ? call.metadata.objective.trim() : "";
+    const initialMessage =
+      typeof call?.metadata?.initialMessage === "string" ? call.metadata.initialMessage.trim() : "";
+    const context = typeof call?.metadata?.context === "string" ? call.metadata.context.trim() : "";
+    const language =
+      typeof call?.metadata?.language === "string" ? call.metadata.language.trim() : "ru";
+
+    const baseInstructions =
+      this.config.streaming?.assistantInstructions?.trim() ||
+      [
+        "Ты ведешь живой телефонный разговор на русском языке.",
+        "Говори от первого лица, короткими репликами (обычно 1-2 предложения).",
+        "Не говори фразы типа «пользователь попросил» и не упоминай, что ты бот.",
+        "Фиксируй практический результат разговора: подтверждено/не подтверждено, что нужно уточнить дальше.",
+      ].join(" ");
+
+    const objectiveBlock = objective
+      ? `Цель звонка: ${objective}`
+      : initialMessage
+        ? `Цель звонка: ${initialMessage}`
+        : "";
+    const contextBlock = context ? `Контекст из исходного чата: ${context}` : "";
+    const languageBlock = `Язык разговора по умолчанию: ${language}.`;
+
+    const instructions = [baseInstructions, languageBlock, objectiveBlock, contextBlock]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
+
+    return {
+      instructions,
+      initialPrompt: initialMessage || objective || undefined,
+      language,
+      voice: this.config.streaming?.assistantVoice,
+    };
+  }
+
+  private isCarrierAnnouncementTranscript(transcript: string): boolean {
+    const normalized = transcript.toLowerCase();
+    const carrierPatterns = [
+      /телефон выключен/,
+      /вне зоны действия сети/,
+      /абонент.*недоступ/,
+      /не может ответить/,
+      /перезвоните позднее/,
+      /номер набран неправильно/,
+      /the number you.*not available/,
+      /subscriber.*not available/,
+      /out of coverage/,
+      /switched off/,
+    ];
+    return carrierPatterns.some((pattern) => pattern.test(normalized));
   }
 
   /**

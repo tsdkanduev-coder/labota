@@ -190,7 +190,8 @@ export async function createVoiceCallRuntime(params: {
     const twilioProvider = provider.name === "twilio" ? (provider as TwilioProvider) : null;
     const voximplantProvider =
       provider.name === "voximplant" ? (provider as VoximplantProvider) : null;
-    if (ttsRuntime?.textToSpeechTelephony) {
+    const realtimeConversationMode = config.streaming?.mode === "realtime-conversation";
+    if (!realtimeConversationMode && ttsRuntime?.textToSpeechTelephony) {
       try {
         const ttsProvider = createTelephonyTtsProvider({
           coreConfig,
@@ -207,8 +208,10 @@ export async function createVoiceCallRuntime(params: {
           }`,
         );
       }
-    } else {
+    } else if (!realtimeConversationMode) {
       log.warn("[voice-call] Telephony TTS unavailable; streaming TTS disabled");
+    } else {
+      log.info("[voice-call] Realtime conversation mode enabled; provider-level TTS bypassed");
     }
 
     const mediaHandler = webhookServer.getMediaStreamHandler();

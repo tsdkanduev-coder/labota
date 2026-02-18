@@ -88,12 +88,24 @@ const voiceCallConfigSchema = {
       advanced: true,
     },
     "streaming.enabled": { label: "Enable Streaming", advanced: true },
+    "streaming.mode": {
+      label: "Streaming Mode",
+      help: "stt-llm-tts (legacy cascade) or realtime-conversation (OpenAI voice brain).",
+      advanced: true,
+    },
     "streaming.openaiApiKey": {
       label: "OpenAI Realtime API Key",
       sensitive: true,
       advanced: true,
     },
     "streaming.sttModel": { label: "Realtime STT Model", advanced: true },
+    "streaming.realtimeModel": { label: "Realtime Conversation Model", advanced: true },
+    "streaming.assistantVoice": { label: "Realtime Assistant Voice", advanced: true },
+    "streaming.assistantInstructions": {
+      label: "Realtime Assistant Instructions",
+      advanced: true,
+    },
+    "streaming.bargeInOnSpeechStart": { label: "Barge-in On Speech Start", advanced: true },
     "streaming.streamPath": { label: "Media Stream Path", advanced: true },
     "tts.provider": {
       label: "TTS Provider Override",

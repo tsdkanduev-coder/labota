@@ -231,26 +231,44 @@ export const VoiceCallStreamingConfigSchema = z
   .object({
     /** Enable real-time audio streaming (requires WebSocket support) */
     enabled: z.boolean().default(false),
+    /**
+     * Streaming pipeline mode:
+     * - "stt-llm-tts": current cascaded pipeline (STT -> text LLM -> TTS)
+     * - "realtime-conversation": OpenAI Realtime voice brain (speech-to-speech)
+     */
+    mode: z.enum(["stt-llm-tts", "realtime-conversation"]).default("stt-llm-tts"),
     /** STT provider for real-time transcription */
     sttProvider: z.enum(["openai-realtime"]).default("openai-realtime"),
     /** OpenAI API key for Realtime API (uses OPENAI_API_KEY env if not set) */
     openaiApiKey: z.string().min(1).optional(),
     /** OpenAI transcription model (default: gpt-4o-transcribe) */
     sttModel: z.string().min(1).default("gpt-4o-transcribe"),
+    /** OpenAI Realtime conversation model (default: gpt-realtime) */
+    realtimeModel: z.string().min(1).default("gpt-realtime"),
+    /** Assistant voice when using realtime-conversation mode */
+    assistantVoice: z.string().min(1).default("alloy"),
+    /** Optional assistant instructions for realtime-conversation mode */
+    assistantInstructions: z.string().optional(),
     /** VAD silence duration in ms before considering speech ended */
     silenceDurationMs: z.number().int().positive().default(800),
     /** VAD threshold 0-1 (higher = less sensitive) */
     vadThreshold: z.number().min(0).max(1).default(0.5),
+    /** If true, clear outbound audio as soon as caller speech starts (barge-in) */
+    bargeInOnSpeechStart: z.boolean().default(false),
     /** WebSocket path for media stream connections */
     streamPath: z.string().min(1).default("/voice/stream"),
   })
   .strict()
   .default({
     enabled: false,
+    mode: "stt-llm-tts",
     sttProvider: "openai-realtime",
     sttModel: "gpt-4o-transcribe",
+    realtimeModel: "gpt-realtime",
+    assistantVoice: "alloy",
     silenceDurationMs: 800,
     vadThreshold: 0.5,
+    bargeInOnSpeechStart: false,
     streamPath: "/voice/stream",
   });
 export type VoiceCallStreamingConfig = z.infer<typeof VoiceCallStreamingConfigSchema>;

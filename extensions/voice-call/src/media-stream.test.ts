@@ -12,6 +12,10 @@ const createStubSession = (): RealtimeSTTSession => ({
   onPartial: () => {},
   onTranscript: () => {},
   onSpeechStart: () => {},
+  onAssistantPartial: () => {},
+  onAssistantTranscript: () => {},
+  onAssistantAudio: () => {},
+  isConversationMode: () => false,
   close: () => {},
   isConnected: () => true,
 });
