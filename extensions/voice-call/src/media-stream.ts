@@ -160,7 +160,8 @@ export class MediaStreamHandler {
     message: TwilioMediaMessage,
     streamToken?: string,
   ): Promise<StreamSession | null> {
-    const streamSid = message.streamSid || message.start?.streamSid || "";
+    // VoxEngine sendMediaTo does not include streamSid — generate a synthetic one.
+    const streamSid = message.streamSid || message.start?.streamSid || `vox-stream-${Date.now()}`;
     let callId = this.extractCallId(message);
 
     // Prefer token from start message customParameters (set via TwiML <Parameter>),
@@ -377,6 +378,27 @@ export class MediaStreamHandler {
     };
 
     this.sessions.set(streamSid, session);
+
+    // VoxEngine ws.sendMediaTo(call) requires a JSON "start" event from the
+    // server before it will begin playing incoming audio to the call.
+    // Send it immediately so TTS audio can be played as soon as it arrives.
+    if (transport === "twilio-json" && ws.readyState === WebSocket.OPEN) {
+      const startAck = JSON.stringify({
+        event: "start",
+        sequenceNumber: 0,
+        start: {
+          mediaFormat: {
+            encoding: "audio/x-mulaw",
+            sampleRate: 8000,
+            channels: 1,
+          },
+          customParameters: {},
+        },
+      });
+      ws.send(startAck);
+      console.log(`[MediaStream] Sent start ack to stream ${streamSid}`);
+    }
+
     this.config.onConnect?.(callId, streamSid);
 
     sttSession.connect().catch((err) => {
@@ -469,6 +491,12 @@ export class MediaStreamHandler {
   private sendToStream(streamSid: string, message: unknown): void {
     const session = this.getOpenSession(streamSid);
     if (!session) {
+      if (!this._loggedMissingStream.has(streamSid)) {
+        this._loggedMissingStream.add(streamSid);
+        console.warn(
+          `[MediaStream] sendToStream: no open session for ${streamSid} (sessions: ${[...this.sessions.keys()].join(", ") || "none"})`,
+        );
+      }
       return;
     }
     if (session.transport === "raw") {
@@ -480,6 +508,8 @@ export class MediaStreamHandler {
     }
     session.ws.send(JSON.stringify(message));
   }
+
+  private _loggedMissingStream = new Set<string>();
 
   private extractRawAudioPayload(message: unknown): Buffer | null {
     if (!message || typeof message !== "object") {
@@ -507,7 +537,17 @@ export class MediaStreamHandler {
    * Send audio to a specific stream (for TTS playback).
    * Audio should be mu-law encoded at 8kHz mono.
    */
+  private _audioChunksSent = new Map<string, number>();
+
   sendAudio(streamSid: string, muLawAudio: Buffer): void {
+    const count = (this._audioChunksSent.get(streamSid) || 0) + 1;
+    this._audioChunksSent.set(streamSid, count);
+    // Log first chunk and every 100th to confirm audio flow without flooding.
+    if (count === 1 || count % 100 === 0) {
+      console.log(
+        `[MediaStream] sendAudio chunk #${count} (${muLawAudio.length}B) to ${streamSid}`,
+      );
+    }
     this.sendToStream(streamSid, {
       event: "media",
       streamSid,

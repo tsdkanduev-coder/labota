@@ -306,10 +306,16 @@ export class VoximplantProvider implements VoiceCallProvider {
   async playTts(input: PlayTtsInput): Promise<void> {
     const streamSid = this.resolveStreamSid(input.providerCallId, input.callId);
     if (this.ttsProvider && this.mediaStreamHandler && streamSid !== undefined) {
+      console.log(
+        `[voximplant] playTts via stream ${streamSid} for call ${input.callId} (text: ${input.text.slice(0, 60)}...)`,
+      );
       await this.playTtsViaStream(input.text, streamSid);
       return;
     }
 
+    console.log(
+      `[voximplant] playTts via control URL for call ${input.callId} (streamSid=${streamSid}, hasTTS=${!!this.ttsProvider}, hasHandler=${!!this.mediaStreamHandler})`,
+    );
     await this.sendControlCommand(input.callId, input.providerCallId, {
       action: "speak",
       text: input.text,
@@ -447,17 +453,24 @@ export class VoximplantProvider implements VoiceCallProvider {
     const handler = this.mediaStreamHandler;
     const ttsProvider = this.ttsProvider;
     await handler.queueTts(streamSid, async (signal) => {
+      console.log(`[voximplant] Synthesizing TTS for stream ${streamSid}...`);
       const muLawAudio = await ttsProvider.synthesizeForTelephony(text);
+      console.log(
+        `[voximplant] TTS synthesized: ${muLawAudio.length} bytes (${Math.round(muLawAudio.length / 8)} ms at 8kHz)`,
+      );
+      let chunkCount = 0;
       for (const chunk of chunkAudio(muLawAudio, CHUNK_SIZE)) {
         if (signal.aborted) {
           break;
         }
         handler.sendAudio(streamSid, chunk);
+        chunkCount++;
         await new Promise((resolve) => setTimeout(resolve, CHUNK_DELAY_MS));
         if (signal.aborted) {
           break;
         }
       }
+      console.log(`[voximplant] Sent ${chunkCount} audio chunks to stream ${streamSid}`);
 
       if (!signal.aborted) {
         handler.sendMark(streamSid, `tts-${Date.now()}`);
