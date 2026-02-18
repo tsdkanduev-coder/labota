@@ -407,13 +407,27 @@ export class MediaStreamHandler {
 
     this.sessions.set(streamSid, session);
 
-    // VoxEngine ws.sendMediaTo(call) picks up encoding from its own
-    // {encoding: ULAW} parameter, NOT from a start event.  Sending a Twilio-
-    // style start ack confused VoxEngine into treating incoming audio as PCM16
-    // (default) which caused loud noise.  Do NOT send a start event — just
-    // begin sending media events directly.  VoxEngine starts relaying
-    // incoming audio once it receives the first media event.
-    console.log(`[MediaStream] Session ready for stream ${streamSid} (transport=${transport})`);
+    // VoxEngine ws.sendMediaTo(call) requires a JSON "start" event from the
+    // server before it will begin playing incoming audio to the call.
+    // The encoding MUST be "audio/x-mulaw" (per VoxEngine docs) so that
+    // VoxEngine decodes our mu-law chunks correctly.
+    if (transport === "twilio-json" && ws.readyState === WebSocket.OPEN) {
+      const startEvent = JSON.stringify({
+        event: "start",
+        sequenceNumber: 0,
+        start: {
+          mediaFormat: {
+            encoding: "audio/x-mulaw",
+            sampleRate: 8000,
+            channels: 1,
+          },
+          customParameters: {},
+        },
+        streamSid,
+      });
+      ws.send(startEvent);
+      console.log(`[MediaStream] Sent start event to stream ${streamSid} (transport=${transport})`);
+    }
 
     this.config.onConnect?.(callId, streamSid);
 
