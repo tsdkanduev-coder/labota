@@ -316,14 +316,25 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       },
     });
 
+    // Trigger the first assistant turn.
+    // We send a hidden system-like nudge as a "user" message so that the
+    // model generates its opening greeting using the voice and instructions
+    // already configured in session.update.  The nudge is intentionally
+    // short and generic so the model relies on `instructions` for tone,
+    // language, and objective — it will NOT echo this text back.
     const initialPrompt = this.conversation?.initialPrompt?.trim();
     if (initialPrompt) {
+      const language = this.conversation?.language?.trim() || "ru";
+      const nudge =
+        language === "ru"
+          ? "Тебе ответили на звонок. Поздоровайся кратко и перейди к цели звонка."
+          : "The call was answered. Greet briefly and state the purpose of your call.";
       this.sendEvent({
         type: "conversation.item.create",
         item: {
           type: "message",
           role: "user",
-          content: [{ type: "input_text", text: initialPrompt }],
+          content: [{ type: "input_text", text: nudge }],
         },
       });
       this.sendEvent({
