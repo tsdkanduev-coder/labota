@@ -252,6 +252,13 @@ export class VoiceCallWebhookServer {
   private buildRealtimeConversationContext(providerCallId: string): RealtimeConversationContext {
     const call =
       this.manager.getCallByProviderCallId(providerCallId) || this.manager.getCall(providerCallId);
+
+    console.log(
+      `[voice-call] buildRealtimeConversationContext: providerCallId=${providerCallId}, ` +
+        `callFound=${!!call}, callId=${call?.callId ?? "none"}, ` +
+        `metadata=${JSON.stringify(call?.metadata ?? {})}`,
+    );
+
     const objective =
       typeof call?.metadata?.objective === "string" ? call.metadata.objective.trim() : "";
     const initialMessage =
@@ -280,6 +287,12 @@ export class VoiceCallWebhookServer {
     const instructions = [baseInstructions, languageBlock, objectiveBlock, contextBlock]
       .filter((part) => part.length > 0)
       .join("\n\n");
+
+    console.log(
+      `[voice-call] Realtime instructions for ${providerCallId}: ` +
+        `objective="${objective}", initialMessage="${initialMessage}", ` +
+        `context="${context.slice(0, 100)}...", instructionsLength=${instructions.length}`,
+    );
 
     // initialPrompt is used as a boolean-ish trigger: if truthy the realtime
     // session will inject a nudge so the model speaks first.  The actual
