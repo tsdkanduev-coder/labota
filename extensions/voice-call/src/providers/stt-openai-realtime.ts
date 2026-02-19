@@ -162,6 +162,9 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
   private onAssistantPartialCallback: ((partial: string) => void) | null = null;
   private onAssistantAudioCallback: ((audio: Buffer) => void) | null = null;
 
+  /** Resolves when session.updated is received — used to defer response.create */
+  private sessionUpdatedResolve: (() => void) | null = null;
+
   private readonly apiKey: string;
   private readonly model: string;
   private readonly mode: RealtimeMode;
@@ -295,6 +298,22 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
 
     const voice = this.conversation?.voice?.trim() || this.defaultAssistantVoice;
 
+    // Set up a promise that resolves when session.updated arrives.
+    // We must wait for session.updated before triggering response.create,
+    // otherwise the model starts generating with default (empty) instructions
+    // and then "resets" mid-sentence when our real instructions arrive.
+    const sessionUpdated = new Promise<void>((resolve) => {
+      this.sessionUpdatedResolve = resolve;
+      // Safety timeout — don't hang forever if event is lost
+      setTimeout(() => {
+        if (this.sessionUpdatedResolve === resolve) {
+          console.warn("[Realtime] session.updated not received within 5s, proceeding anyway");
+          this.sessionUpdatedResolve = null;
+          resolve();
+        }
+      }, 5000);
+    });
+
     this.sendEvent({
       type: "session.update",
       session: {
@@ -316,17 +335,22 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       },
     });
 
-    // If there is an objective, trigger the first assistant turn immediately
-    // so the bot speaks first (greets and states purpose).
-    // No fake "user" message — just ask the model to generate a response
-    // based on its instructions which already contain the call objective.
+    // Wait for session.updated before triggering the first assistant turn.
+    // This prevents the race condition where the model starts speaking with
+    // default instructions and then resets when our real instructions arrive.
     const initialPrompt = this.conversation?.initialPrompt?.trim();
     if (initialPrompt) {
-      this.sendEvent({
-        type: "response.create",
-        response: {
-          modalities: ["text", "audio"],
-        },
+      void sessionUpdated.then(() => {
+        if (this.closed) {
+          return;
+        }
+        console.log("[Realtime] session.updated confirmed, sending response.create");
+        this.sendEvent({
+          type: "response.create",
+          response: {
+            modalities: ["text", "audio"],
+          },
+        });
       });
     }
   }
@@ -374,12 +398,21 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       case "transcription_session.created":
       case "transcription_session.updated":
       case "session.created":
-      case "session.updated":
       case "input_audio_buffer.speech_stopped":
       case "input_audio_buffer.committed":
       case "response.created":
       case "response.done":
         console.log(`[Realtime] ${type}`);
+        return;
+
+      case "session.updated":
+        console.log(`[Realtime] ${type}`);
+        // Resolve the pending sessionUpdated promise so response.create
+        // fires only after our instructions are confirmed by the server.
+        if (this.sessionUpdatedResolve) {
+          this.sessionUpdatedResolve();
+          this.sessionUpdatedResolve = null;
+        }
         return;
 
       case "conversation.item.input_audio_transcription.delta": {
