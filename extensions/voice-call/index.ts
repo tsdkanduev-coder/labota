@@ -254,6 +254,9 @@ const voiceCallPlugin = {
       runtime.manager.setOnCallEndedHook((call) => {
         const sessionKey = typeof call.sessionKey === "string" ? call.sessionKey.trim() : "";
         if (!sessionKey) {
+          api.logger.warn(
+            `[voice-call] onCallEnded: no sessionKey for call ${call.callId}, cannot report`,
+          );
           return;
         }
         const reason = call.endReason ?? call.state;
@@ -288,7 +291,9 @@ const voiceCallPlugin = {
           transcriptCount: call.transcript.length,
           transcript,
         };
-        const text = [
+
+        // Build the system event prompt for the LLM agent
+        const systemPromptForAgent = [
           "VOICE_CALL_COMPLETED",
           [
             "Ты — профессиональный консьерж-ассистент. Проанализируй транскрипт звонка и напиши пользователю в текущий Telegram-чат отчёт о результате.",
@@ -306,20 +311,14 @@ const voiceCallPlugin = {
             "4. Если цель не достигнута — объясни причину и предложи конкретный следующий шаг.",
             "5. Завершай фразой в духе «Остаёмся в вашем распоряжении по любым вопросам.»",
             "",
-            "Пример хорошего ответа:",
-            "«Цевдн, уточнили информацию. Для вас забронирован стол в ресторане «Кафе Пушкинъ» на 4 персоны.",
-            "Дата: 05.10.25",
-            "Время: 16:00",
-            "Адрес: Тверской бул., 26А, Москва",
-            "Бронь на ваше имя, держится 15 минут. Ограничение по времени — 2 часа.",
-            "Остаёмся в вашем распоряжении по любым вопросам.»",
-            "",
             "Не выдумывай информацию — используй только то, что есть в транскрипте.",
           ].join("\n"),
           JSON.stringify(payload, null, 2),
         ].join("\n\n");
+
+        // Enqueue the event for the agent (will be picked up on the next turn)
         try {
-          api.runtime.system.enqueueSystemEvent(text, {
+          api.runtime.system.enqueueSystemEvent(systemPromptForAgent, {
             sessionKey,
             contextKey: `voice-call:${call.callId}:ended`,
           });
@@ -329,6 +328,29 @@ const voiceCallPlugin = {
               err instanceof Error ? err.message : String(err)
             }`,
           );
+        }
+
+        // Proactively send a direct Telegram message with call results.
+        // The system event queue only drains on the NEXT user message, so
+        // without this the user would never see the call result until they
+        // write something. We extract the Telegram chat ID from the
+        // sessionKey (format: "agent:<id>:telegram:<type>:<chatId>...")
+        // and send a formatted summary immediately.
+        const telegramChatId = extractTelegramChatId(sessionKey);
+        if (telegramChatId) {
+          const summary = buildCallSummary(call, transcript, objective, durationSec);
+          api.logger.info(
+            `[voice-call] Sending proactive Telegram message to ${telegramChatId} for call ${call.callId}`,
+          );
+          api.runtime.channel.telegram
+            .sendMessageTelegram(telegramChatId, summary)
+            .catch((err: unknown) => {
+              api.logger.warn(
+                `[voice-call] Failed to send proactive Telegram message: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            });
         }
       });
       return runtime;
@@ -370,7 +392,13 @@ const voiceCallPlugin = {
             typeof params?.language === "string" && params.language.trim()
               ? params.language.trim()
               : undefined;
-          const result = await rt.manager.initiateCall(to, undefined, {
+          // Accept sessionKey so the call-ended hook can report results back
+          // to the originating chat session (Telegram group/DM).
+          const gatewaySessionKey =
+            typeof params?.sessionKey === "string" && params.sessionKey.trim()
+              ? params.sessionKey.trim()
+              : undefined;
+          const result = await rt.manager.initiateCall(to, gatewaySessionKey, {
             message,
             objective,
             context,
@@ -745,5 +773,68 @@ const voiceCallPlugin = {
     });
   },
 };
+
+/**
+ * Extract a Telegram chat ID from a session key.
+ * Session keys follow the pattern: "agent:<agentId>:telegram:<type>:<chatId>[:topic:<topicId>]"
+ * where <type> is "dm", "group", etc.
+ * Returns the chat ID string (e.g. "-100123456789") or null if not a Telegram session.
+ */
+function extractTelegramChatId(sessionKey: string): string | null {
+  // Match "telegram:dm:<id>" or "telegram:group:<id>" patterns
+  const match = sessionKey.match(/telegram:(?:dm|group):(-?\d+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Build a human-readable call summary for direct Telegram delivery.
+ * This does NOT use LLM — it's a simple template so it sends instantly.
+ * The LLM-powered rich summary still goes through the system event queue.
+ */
+function buildCallSummary(
+  call: CallRecord,
+  transcript: Array<{ speaker: string; text: string }>,
+  objective: string,
+  durationSec: number,
+): string {
+  const lines: string[] = [];
+
+  // Header
+  const succeeded =
+    call.state === "hangup-user" || call.state === "hangup-bot" || call.state === "timeout";
+  if (succeeded) {
+    lines.push("Звонок завершён.");
+  } else {
+    lines.push(`Звонок завершён (${call.endReason ?? call.state}).`);
+  }
+
+  // Objective
+  if (objective) {
+    lines.push(`Задача: ${objective}`);
+  }
+
+  // Duration
+  if (durationSec > 0) {
+    const min = Math.floor(durationSec / 60);
+    const sec = durationSec % 60;
+    lines.push(`Длительность: ${min > 0 ? `${min} мин ` : ""}${sec} сек`);
+  }
+
+  // Last few transcript lines (up to 6)
+  if (transcript.length > 0) {
+    lines.push("");
+    lines.push("Ключевые реплики:");
+    const recent = transcript.slice(-6);
+    for (const entry of recent) {
+      const speaker = entry.speaker === "assistant" ? "Бот" : "Собеседник";
+      lines.push(`— ${speaker}: ${entry.text}`);
+    }
+  }
+
+  lines.push("");
+  lines.push("Остаёмся в вашем распоряжении.");
+
+  return lines.join("\n");
+}
 
 export default voiceCallPlugin;
