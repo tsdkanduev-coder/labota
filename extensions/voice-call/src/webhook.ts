@@ -276,22 +276,29 @@ export class VoiceCallWebhookServer {
         "Фиксируй практический результат разговора: подтверждено/не подтверждено, что нужно уточнить дальше.",
       ].join(" ");
 
-    const objectiveBlock = objective
-      ? `Цель звонка: ${objective}`
-      : initialMessage
-        ? `Цель звонка: ${initialMessage}`
-        : "";
-    const contextBlock = context ? `Контекст из исходного чата: ${context}` : "";
+    // Combine objective, initialMessage, and context into a single clear
+    // task block so the model gets one coherent instruction instead of three
+    // overlapping fields.
+    const taskParts: string[] = [];
+    if (objective) {
+      taskParts.push(objective);
+    } else if (initialMessage) {
+      taskParts.push(initialMessage);
+    }
+    if (context && context !== objective && context !== initialMessage) {
+      taskParts.push(context);
+    }
+    const taskBlock = taskParts.length > 0 ? `Задание: ${taskParts.join(". ")}` : "";
+
     const languageBlock = `Язык разговора по умолчанию: ${language}.`;
 
-    const instructions = [baseInstructions, languageBlock, objectiveBlock, contextBlock]
+    const instructions = [baseInstructions, languageBlock, taskBlock]
       .filter((part) => part.length > 0)
       .join("\n\n");
 
     console.log(
       `[voice-call] Realtime instructions for ${providerCallId}: ` +
-        `objective="${objective}", initialMessage="${initialMessage}", ` +
-        `context="${context.slice(0, 100)}...", instructionsLength=${instructions.length}`,
+        `task="${taskBlock.slice(0, 200)}", instructionsLength=${instructions.length}`,
     );
 
     // initialPrompt is used as a boolean-ish trigger: if truthy the realtime
