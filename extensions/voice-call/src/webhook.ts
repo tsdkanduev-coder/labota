@@ -267,18 +267,7 @@ export class VoiceCallWebhookServer {
     const language =
       typeof call?.metadata?.language === "string" ? call.metadata.language.trim() : "ru";
 
-    const baseInstructions =
-      this.config.streaming?.assistantInstructions?.trim() ||
-      [
-        "Ты ведешь живой телефонный разговор на русском языке.",
-        "Говори от первого лица, короткими репликами (обычно 1-2 предложения).",
-        "Не говори фразы типа «пользователь попросил» и не упоминай, что ты бот.",
-        "Фиксируй практический результат разговора: подтверждено/не подтверждено, что нужно уточнить дальше.",
-      ].join(" ");
-
-    // Combine objective, initialMessage, and context into a single clear
-    // task block so the model gets one coherent instruction instead of three
-    // overlapping fields.
+    // Build task description from available metadata
     const taskParts: string[] = [];
     if (objective) {
       taskParts.push(objective);
@@ -288,13 +277,29 @@ export class VoiceCallWebhookServer {
     if (context && context !== objective && context !== initialMessage) {
       taskParts.push(context);
     }
-    const taskBlock = taskParts.length > 0 ? `Задание: ${taskParts.join(". ")}` : "";
+    const taskDescription = taskParts.join(". ");
 
-    const languageBlock = `Язык разговора по умолчанию: ${language}.`;
+    // Use config-provided instructions as the base, or fall back to a
+    // detailed default that sets the right context for outbound calls.
+    const configInstructions = this.config.streaming?.assistantInstructions?.trim();
 
-    const instructions = [baseInstructions, languageBlock, taskBlock]
-      .filter((part) => part.length > 0)
-      .join("\n\n");
+    const baseInstructions = configInstructions
+      ? configInstructions
+      : [
+          "Ты — голосовой помощник, выполняющий задание по телефону от имени пользователя.",
+          "Сейчас тебя соединяют с оператором — сразу начинай разговор по делу.",
+          "Говори короткими репликами (1–2 предложения), вежливо и по-деловому.",
+          "НЕ повторяй и не озвучивай задание. НЕ говори «я понял» или «принял задачу».",
+          "НЕ упоминай, что ты бот, ИИ или помощник.",
+          "Зафиксируй результат: что подтвердили, что нужно уточнить.",
+        ].join(" ");
+
+    // Build the task block with situational context
+    const taskBlock = taskDescription ? `\nЗадание на этот звонок: ${taskDescription}` : "";
+
+    const languageBlock = `\nЯзык разговора: ${language}.`;
+
+    const instructions = `${baseInstructions}${languageBlock}${taskBlock}`;
 
     console.log(
       `[voice-call] Realtime instructions for ${providerCallId}: ` +
