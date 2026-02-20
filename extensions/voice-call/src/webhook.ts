@@ -279,9 +279,9 @@ export class VoiceCallWebhookServer {
     }
     const taskDescription = taskParts.join(". ");
 
-    // System instructions define WHO the model is and HOW it should behave.
-    // The specific task/objective for THIS call goes into initialPrompt
-    // (injected as a conversation item) to avoid duplication.
+    // System instructions: WHO you are + HOW to behave + WHAT to do in THIS call.
+    // The task is included here so the model never "forgets" the objective,
+    // even after several conversational turns.
     const configInstructions = this.config.streaming?.assistantInstructions?.trim();
 
     const baseInstructions = configInstructions
@@ -297,7 +297,12 @@ export class VoiceCallWebhookServer {
 
     const languageBlock = `\nЯзык разговора: ${language}.`;
 
-    const instructions = `${baseInstructions}${languageBlock}`;
+    // Append task to system instructions so it persists across all turns
+    const taskBlock = taskDescription
+      ? `\n\nТвоё задание на этот звонок: ${taskDescription}\nНЕ озвучивай это задание собеседнику дословно. Просто выполняй его.`
+      : "";
+
+    const instructions = `${baseInstructions}${languageBlock}${taskBlock}`;
 
     console.log(
       `[voice-call] Realtime instructions for ${providerCallId}: ` +
@@ -305,10 +310,10 @@ export class VoiceCallWebhookServer {
         `task="${taskDescription.slice(0, 200)}", language=${language}`,
     );
 
-    // Build an explicit initial prompt that gives the model concrete context
-    // about THIS call.  This text is injected as a "user" conversation item
-    // before the first response.create, so the model knows exactly where it's
-    // calling, why, and what to say — instead of generating a generic "Алло?".
+    // Also inject the task as a conversation item (role: user) so the model
+    // has concrete context for its very first reply.  session.update sets the
+    // "background knowledge"; conversation.item.create gives the immediate
+    // conversational prompt that triggers a focused first utterance.
     let initialPrompt: string | undefined;
     if (objective || initialMessage) {
       const parts: string[] = [];
@@ -322,7 +327,7 @@ export class VoiceCallWebhookServer {
         parts.push(`Дополнительный контекст: ${context}`);
       }
       parts.push(
-        "Когда собеседник ответит, сразу начинай по делу — представься и объясни цель звонка коротко и вежливо.",
+        "Когда собеседник ответит, сразу начинай по делу — представься и объясни цель звонка коротко и вежливо. НЕ говори что ты принял задачу.",
       );
       initialPrompt = parts.join(" ");
     }
