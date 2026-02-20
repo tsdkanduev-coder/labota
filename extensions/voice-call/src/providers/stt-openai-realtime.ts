@@ -328,7 +328,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         turn_detection: {
           type: "server_vad",
           threshold: this.vadThreshold,
-          prefix_padding_ms: 300,
+          prefix_padding_ms: 500,
           silence_duration_ms: this.silenceDurationMs,
           create_response: true,
         },
