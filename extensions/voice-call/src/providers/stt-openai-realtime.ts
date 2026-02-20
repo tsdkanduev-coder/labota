@@ -322,9 +322,12 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         voice,
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        input_audio_transcription: {
-          model: "gpt-4o-mini-transcribe",
-        },
+        // NOTE: input_audio_transcription intentionally omitted.
+        // gpt-4o-mini-transcribe running in parallel was hallucinating
+        // on ULAW 8kHz phone audio ("Alô", "Miəsləş?", "awa") and
+        // polluting the call transcript.  The Realtime model itself
+        // listens to raw audio directly and does not need this.
+        // User speech transcripts come from the model's own understanding.
         turn_detection: {
           type: "server_vad",
           threshold: this.vadThreshold,
