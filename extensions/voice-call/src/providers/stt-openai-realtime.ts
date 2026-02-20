@@ -334,6 +334,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
           prefix_padding_ms: 500,
           silence_duration_ms: this.silenceDurationMs,
           create_response: true,
+          eagerness: "high",
         },
       },
     });
