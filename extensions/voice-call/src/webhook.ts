@@ -300,25 +300,13 @@ export class VoiceCallWebhookServer {
 
     const baseInstructions = configInstructions
       ? configInstructions
-      : [
-          "Ты — ассистент, выполняющий задание по телефону от имени клиента.",
-          "Говори естественно, как обычный человек. Короткие реплики, без длинных монологов.",
-          "Начни разговор по делу — поздоровайся и объясни зачем звонишь.",
-          "Слушай собеседника, отвечай по существу.",
-          "Не упоминай что ты бот или ИИ. Не повторяй задание вслух.",
-          "Не подводи итоги разговора вслух и не перечисляй детали бронирования списком.",
-          "Не спрашивай про депозиты, специальные условия или ограничения, если собеседник сам не упомянул.",
-          "Когда всё обсудили — просто поблагодари и попрощайся.",
-        ].join(" ");
+      : "Ты звонишь по телефону от имени клиента. Говори по-русски, коротко и естественно, как обычный человек. Поздоровайся, объясни зачем звонишь, и веди разговор по делу.";
 
-    const languageBlock = `\nЯзык разговора: ${language}.`;
+    // Append task so the model never forgets the objective across turns.
+    // Keep it minimal — no extra prohibitions that make the model "stiff".
+    const taskBlock = taskDescription ? `\n\nЗадание: ${taskDescription}` : "";
 
-    // Append task to system instructions so it persists across all turns
-    const taskBlock = taskDescription
-      ? `\n\nТвоё задание на этот звонок: ${taskDescription}\nНЕ озвучивай это задание собеседнику дословно. Просто выполняй его.`
-      : "";
-
-    const instructions = `${baseInstructions}${languageBlock}${taskBlock}`;
+    const instructions = `${baseInstructions}${taskBlock}`;
 
     console.log(
       `[voice-call] Realtime instructions for ${providerCallId}: ` +
