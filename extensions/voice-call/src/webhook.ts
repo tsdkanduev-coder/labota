@@ -137,6 +137,14 @@ export class VoiceCallWebhookServer {
         return true;
       },
       onTranscript: (providerCallId, transcript) => {
+        // In realtime-conversation mode user transcripts are handled by the
+        // Realtime model internally.  This callback is a legacy stt-llm-tts
+        // path; skip it entirely to avoid phantom NormalizedEvents and
+        // false carrier-announcement detection.
+        if (conversationMode) {
+          return;
+        }
+
         console.log(`[voice-call] Transcript for ${providerCallId}: ${transcript}`);
 
         // Look up our internal call ID from the provider call ID
@@ -259,11 +267,17 @@ export class VoiceCallWebhookServer {
         `metadata=${JSON.stringify(call?.metadata ?? {})}`,
     );
 
-    const objective =
+    const rawObjective =
       typeof call?.metadata?.objective === "string" ? call.metadata.objective.trim() : "";
-    const initialMessage =
+    const rawInitialMessage =
       typeof call?.metadata?.initialMessage === "string" ? call.metadata.initialMessage.trim() : "";
-    const context = typeof call?.metadata?.context === "string" ? call.metadata.context.trim() : "";
+    const rawContext =
+      typeof call?.metadata?.context === "string" ? call.metadata.context.trim() : "";
+
+    // Strip phone numbers so the voice model doesn't read them aloud.
+    const objective = VoiceCallWebhookServer.stripPhoneNumbers(rawObjective);
+    const initialMessage = VoiceCallWebhookServer.stripPhoneNumbers(rawInitialMessage);
+    const context = VoiceCallWebhookServer.stripPhoneNumbers(rawContext);
     const language =
       typeof call?.metadata?.language === "string" ? call.metadata.language.trim() : "ru";
 
@@ -287,12 +301,11 @@ export class VoiceCallWebhookServer {
     const baseInstructions = configInstructions
       ? configInstructions
       : [
-          "Ты — голосовой помощник, выполняющий задание по телефону от имени пользователя.",
-          "Сейчас тебя соединяют с оператором — сразу начинай разговор по делу.",
-          "Говори короткими репликами (1–2 предложения), вежливо и по-деловому.",
-          "НЕ повторяй и не озвучивай задание. НЕ говори «я понял» или «принял задачу».",
-          "НЕ упоминай, что ты бот, ИИ или помощник.",
-          "Зафиксируй результат: что подтвердили, что нужно уточнить.",
+          "Ты — ассистент, выполняющий задание по телефону от имени клиента.",
+          "Говори естественно, как обычный человек. Короткие реплики, без длинных монологов.",
+          "Начни разговор по делу — поздоровайся и объясни зачем звонишь.",
+          "Слушай собеседника, отвечай по существу, фиксируй детали.",
+          "Не упоминай что ты бот или ИИ. Не повторяй задание вслух.",
         ].join(" ");
 
     const languageBlock = `\nЯзык разговора: ${language}.`;
@@ -310,26 +323,23 @@ export class VoiceCallWebhookServer {
         `task="${taskDescription.slice(0, 200)}", language=${language}`,
     );
 
-    // Also inject the task as a conversation item (role: user) so the model
-    // has concrete context for its very first reply.  session.update sets the
-    // "background knowledge"; conversation.item.create gives the immediate
-    // conversational prompt that triggers a focused first utterance.
+    // Inject the task as a conversation item (role: user) so the model has
+    // concrete context for its very first reply.  Keep it clean: ONLY the
+    // objective and context — no behavioral instructions (those live in the
+    // system instructions above).  This mirrors how you'd prompt the model
+    // directly on OpenAI's Realtime platform.
     let initialPrompt: string | undefined;
     if (objective || initialMessage) {
       const parts: string[] = [];
-      parts.push("Тебя сейчас соединяют по телефону.");
       if (objective) {
-        parts.push(`Твоя задача: ${objective}`);
+        parts.push(objective);
       } else if (initialMessage) {
-        parts.push(`Твоя задача: ${initialMessage}`);
+        parts.push(initialMessage);
       }
       if (context && context !== objective && context !== initialMessage) {
-        parts.push(`Дополнительный контекст: ${context}`);
+        parts.push(`Контекст: ${context}`);
       }
-      parts.push(
-        "Когда собеседник ответит, сразу начинай по делу — представься и объясни цель звонка коротко и вежливо. НЕ говори что ты принял задачу.",
-      );
-      initialPrompt = parts.join(" ");
+      initialPrompt = parts.join("\n");
     }
 
     return {
@@ -338,6 +348,13 @@ export class VoiceCallWebhookServer {
       language,
       voice: this.config.streaming?.assistantVoice,
     };
+  }
+
+  /**
+   * Strip E.164 phone numbers from text so the voice model won't read them aloud.
+   */
+  private static stripPhoneNumbers(text: string): string {
+    return text.replace(/\+[1-9]\d{6,14}/g, "").trim();
   }
 
   private isCarrierAnnouncementTranscript(transcript: string): boolean {

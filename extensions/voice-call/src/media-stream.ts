@@ -444,7 +444,11 @@ export class MediaStreamHandler {
     });
 
     sttSession.onSpeechStart(() => {
-      if (this.config.bargeInOnSpeechStart) {
+      // In realtime-conversation mode barge-in is managed by the Realtime API
+      // itself via turn_detection.  Our clearAudio/clearTtsQueue would send an
+      // extra {event:"clear"} to the telephony provider, duplicating the
+      // model's own interruption and causing a cascade of response cancellations.
+      if (this.config.bargeInOnSpeechStart && !sttSession.isConversationMode()) {
         this.clearTtsQueue(streamSid);
         this.clearAudio(streamSid);
       }
