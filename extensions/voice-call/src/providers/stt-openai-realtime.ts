@@ -344,7 +344,29 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         if (this.closed) {
           return;
         }
-        console.log("[Realtime] session.updated confirmed, sending response.create");
+        console.log(
+          `[Realtime] session.updated confirmed, injecting initial context (${initialPrompt.length} chars) and triggering response`,
+        );
+
+        // Inject the task/objective as a "user" conversation item so the
+        // model knows exactly what it should say when it starts speaking.
+        // Without this, response.create generates a generic "Алло?" because
+        // the model has instructions but no conversational context about
+        // *what* to do in this specific call.
+        this.sendEvent({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: initialPrompt,
+              },
+            ],
+          },
+        });
+
         this.sendEvent({
           type: "response.create",
           response: {
