@@ -329,12 +329,9 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         // listens to raw audio directly and does not need this.
         // User speech transcripts come from the model's own understanding.
         turn_detection: {
-          type: "server_vad",
-          threshold: this.vadThreshold,
-          prefix_padding_ms: 500,
-          silence_duration_ms: this.silenceDurationMs,
-          create_response: true,
+          type: "semantic_vad",
           eagerness: "high",
+          create_response: true,
         },
       },
     });
