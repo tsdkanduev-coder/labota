@@ -338,43 +338,39 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
     // Wait for session.updated before triggering the first assistant turn.
     // This prevents the race condition where the model starts speaking with
     // default instructions and then resets when our real instructions arrive.
-    const initialPrompt = this.conversation?.initialPrompt?.trim();
-    if (initialPrompt) {
-      void sessionUpdated.then(() => {
-        if (this.closed) {
-          return;
-        }
+    void sessionUpdated.then(() => {
+      if (this.closed) {
+        return;
+      }
+
+      const initialPrompt = this.conversation?.initialPrompt?.trim();
+      if (initialPrompt) {
         console.log(
           `[Realtime] session.updated confirmed, injecting initial context (${initialPrompt.length} chars) and triggering response`,
         );
-
-        // Inject the task/objective as a "user" conversation item so the
-        // model knows exactly what it should say when it starts speaking.
-        // Without this, response.create generates a generic "Алло?" because
-        // the model has instructions but no conversational context about
-        // *what* to do in this specific call.
         this.sendEvent({
           type: "conversation.item.create",
           item: {
             type: "message",
             role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: initialPrompt,
-              },
-            ],
+            content: [{ type: "input_text", text: initialPrompt }],
           },
         });
+      } else {
+        console.log(
+          `[Realtime] session.updated confirmed, triggering first response (no initial prompt)`,
+        );
+      }
 
-        this.sendEvent({
-          type: "response.create",
-          response: {
-            modalities: ["text", "audio"],
-          },
-        });
+      // Always trigger the first assistant turn — the model speaks first
+      // based on its instructions (who it is, what to do, etc.).
+      this.sendEvent({
+        type: "response.create",
+        response: {
+          modalities: ["text", "audio"],
+        },
       });
-    }
+    });
   }
 
   private async attemptReconnect(): Promise<void> {

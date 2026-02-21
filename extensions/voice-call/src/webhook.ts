@@ -282,9 +282,10 @@ export class VoiceCallWebhookServer {
         // The complete prompt IS the system instructions — who you are,
         // what to do, how to behave. Single source of truth.
         instructions: prompt,
-        // Minimal trigger — do NOT duplicate instructions here.
-        // Duplicating caused the model to "rush" and confuse roles.
-        initialPrompt: "Здравствуйте!",
+        // No initialPrompt — model starts speaking from instructions alone.
+        // Previously "Здравствуйте!" was injected as role:"user" which made
+        // the model think the callee greeted it and respond with
+        // "Понял, сейчас помогу..." instead of initiating the conversation.
         language,
         voice: this.config.streaming?.assistantVoice,
       };
