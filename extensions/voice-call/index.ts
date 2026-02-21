@@ -150,8 +150,8 @@ const VoiceCallToolSchema = Type.Union([
           "System instructions for the voice model. Build from the user's Telegram message using this structure:\n" +
           "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с разными ежедневными делами.'\n" +
           "(2) TASK: Summary of what the user needs (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
-          "(3) CONTEXT: Explain that we already found the right number and are connecting to the right person " +
-          "(e.g. 'Мы нашли номер ресторана и соединяем тебя с хостес, которая может забронировать столик').\n" +
+          "(3) CONTEXT: The call is already connected — say who is on the line " +
+          "(e.g. 'Ты уже на линии с хостес ресторана').\n" +
           "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. " +
           "Если перебивают — остановись и слушай.'\n" +
           "Keep the prompt concise. Phone numbers are OK to include.",
@@ -562,7 +562,7 @@ const voiceCallPlugin = {
           "The prompt is system instructions for the voice model and must follow this structure:\n" +
           "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с разными ежедневными делами.'\n" +
           "(2) TASK: Summary of what the user needs from the Telegram message (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
-          "(3) CONTEXT: We already found the right number and are connecting to the right person (e.g. 'Мы нашли номер ресторана и соединяем тебя с хостес').\n" +
+          "(3) CONTEXT: The call is already connected — say who is on the line (e.g. 'Ты уже на линии с хостес ресторана').\n" +
           "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. Если перебивают — остановись и слушай.'\n" +
           "Keep the prompt concise. Phone numbers are OK to include.",
         parameters: VoiceCallToolSchema,

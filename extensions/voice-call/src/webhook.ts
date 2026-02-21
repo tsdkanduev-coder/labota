@@ -284,7 +284,7 @@ export class VoiceCallWebhookServer {
         instructions: prompt,
         // Minimal trigger — do NOT duplicate instructions here.
         // Duplicating caused the model to "rush" and confuse roles.
-        initialPrompt: "Начинай разговор.",
+        initialPrompt: "Здравствуйте!",
         language,
         voice: this.config.streaming?.assistantVoice,
       };
