@@ -146,11 +146,14 @@ const VoiceCallToolSchema = Type.Union([
     prompt: Type.String({
       description:
         "System instructions for the voice model. Build from the user's Telegram message:\n" +
-        "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с ежедневными делами.'\n" +
-        "(2) TASK: Short summary of the goal (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
-        "(3) CONTEXT: 'Ты уже на линии с [кто на линии].' (e.g. 'Ты уже на линии с хостес ресторана').\n" +
+        "(1) ROLE (constant): 'Ты — звонящий. Ты звонишь от имени клиента, чтобы решить его задачу.'\n" +
+        "(2) TASK: Only concrete known details as a statement, NOT questions " +
+        "(e.g. 'Забронировать столик в ресторане на имя Елена, завтра на 20:00, 4 гостя.'). " +
+        "If some detail is unknown, omit it — the operator will ask.\n" +
+        "(3) CONTEXT (constant): 'Ты разговариваешь с собеседником по телефону один на один. " +
+        "Никакого клиента рядом нет — ты сам и есть звонящий.'\n" +
         "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. " +
-        "Если перебивают — остановись и слушай.'",
+        "Отвечай на вопросы собеседника. Если перебивают — остановись и слушай.'",
     }),
     message: Type.Optional(Type.String({ description: "Fallback intro text (for notify mode)" })),
     language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
@@ -556,10 +559,14 @@ const voiceCallPlugin = {
           "Make phone calls via voice-call plugin. " +
           "The required `prompt` field is system instructions for the voice model. " +
           "Build it from the user's Telegram message using 4 blocks:\n" +
-          "(1) ROLE: 'Ты — консьерж-сервис, который помогает людям с ежедневными делами.'\n" +
-          "(2) TASK: Short goal summary (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
-          "(3) CONTEXT: 'Ты уже на линии с [person].' (e.g. 'Ты уже на линии с хостес ресторана').\n" +
-          "(4) BEHAVIOR: 'Веди живой диалог, говори спокойно и коротко. Если перебивают — остановись и слушай.'",
+          "(1) ROLE: 'Ты — звонящий. Ты звонишь от имени клиента, чтобы решить его задачу.'\n" +
+          "(2) TASK: Only concrete known details as a statement, NOT questions " +
+          "(e.g. 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя.'). " +
+          "If a detail is unknown, omit it — the operator will ask.\n" +
+          "(3) CONTEXT: 'Ты разговариваешь с собеседником по телефону один на один. " +
+          "Никакого клиента рядом нет — ты сам и есть звонящий.'\n" +
+          "(4) BEHAVIOR: 'Веди живой диалог, говори спокойно и коротко. " +
+          "Отвечай на вопросы собеседника. Если перебивают — остановись и слушай.'",
         parameters: VoiceCallToolSchema,
         async execute(_toolCallId, params) {
           const json = (payload: unknown) => ({
