@@ -137,14 +137,6 @@ export class VoiceCallWebhookServer {
         return true;
       },
       onTranscript: (providerCallId, transcript) => {
-        // In realtime-conversation mode user transcripts are handled by the
-        // Realtime model internally.  This callback is a legacy stt-llm-tts
-        // path; skip it entirely to avoid phantom NormalizedEvents and
-        // false carrier-announcement detection.
-        if (conversationMode) {
-          return;
-        }
-
         console.log(`[voice-call] Transcript for ${providerCallId}: ${transcript}`);
 
         // Look up our internal call ID from the provider call ID
