@@ -143,9 +143,14 @@ const VoiceCallToolSchema = Type.Union([
   Type.Object({
     action: Type.Literal("initiate_call"),
     to: Type.Optional(Type.String({ description: "Call target" })),
-    message: Type.String({ description: "Intro message" }),
-    objective: Type.Optional(Type.String({ description: "Call objective in plain language" })),
-    context: Type.Optional(Type.String({ description: "Additional context from chat session" })),
+    message: Type.String({ description: "Intro message for notify mode" }),
+    prompt: Type.Optional(
+      Type.String({
+        description:
+          "Complete instruction for the voice model: who it is, what to accomplish, " +
+          "current call situation. NEVER include phone numbers.",
+      }),
+    ),
     language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
     mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
   }),
@@ -265,10 +270,7 @@ const voiceCallPlugin = {
           text: entry.text,
           timestamp: entry.timestamp,
         }));
-        const objective =
-          typeof call.metadata?.objective === "string" ? call.metadata.objective.trim() : "";
-        const context =
-          typeof call.metadata?.context === "string" ? call.metadata.context.trim() : "";
+        const prompt = typeof call.metadata?.prompt === "string" ? call.metadata.prompt.trim() : "";
         const startedAtIso = new Date(call.startedAt).toISOString();
         const endedAtIso = new Date(call.endedAt ?? Date.now()).toISOString();
         const durationSec = Math.max(
@@ -286,8 +288,7 @@ const voiceCallPlugin = {
           startedAt: startedAtIso,
           endedAt: endedAtIso,
           durationSec,
-          objective: objective || null,
-          context: context || null,
+          prompt: prompt || null,
           transcriptCount: call.transcript.length,
           transcript,
         };
@@ -338,7 +339,7 @@ const voiceCallPlugin = {
         // and send a formatted summary immediately.
         const telegramChatId = extractTelegramChatId(sessionKey);
         if (telegramChatId) {
-          const summary = buildCallSummary(call, transcript, objective, durationSec);
+          const summary = buildCallSummary(call, transcript, prompt, durationSec);
           api.logger.info(
             `[voice-call] Sending proactive Telegram message to ${telegramChatId} for call ${call.callId}`,
           );
@@ -380,13 +381,9 @@ const voiceCallPlugin = {
           }
           const mode =
             params?.mode === "notify" || params?.mode === "conversation" ? params.mode : undefined;
-          const objective =
-            typeof params?.objective === "string" && params.objective.trim()
-              ? params.objective.trim()
-              : undefined;
-          const context =
-            typeof params?.context === "string" && params.context.trim()
-              ? params.context.trim()
+          const prompt =
+            typeof params?.prompt === "string" && params.prompt.trim()
+              ? params.prompt.trim()
               : undefined;
           const language =
             typeof params?.language === "string" && params.language.trim()
@@ -400,8 +397,7 @@ const voiceCallPlugin = {
               : undefined;
           const result = await rt.manager.initiateCall(to, gatewaySessionKey, {
             message,
-            objective,
-            context,
+            prompt,
             language,
             mode,
           });
@@ -522,13 +518,9 @@ const voiceCallPlugin = {
             return;
           }
           const rt = await ensureRuntime();
-          const objective =
-            typeof params?.objective === "string" && params.objective.trim()
-              ? params.objective.trim()
-              : undefined;
-          const context =
-            typeof params?.context === "string" && params.context.trim()
-              ? params.context.trim()
+          const prompt =
+            typeof params?.prompt === "string" && params.prompt.trim()
+              ? params.prompt.trim()
               : undefined;
           const language =
             typeof params?.language === "string" && params.language.trim()
@@ -536,8 +528,7 @@ const voiceCallPlugin = {
               : undefined;
           const result = await rt.manager.initiateCall(to, undefined, {
             message: message || undefined,
-            objective,
-            context,
+            prompt,
             language,
           });
           if (!result.success) {
@@ -584,13 +575,9 @@ const voiceCallPlugin = {
                   if (!to) {
                     throw new Error("to required");
                   }
-                  const objective =
-                    typeof params.objective === "string" && params.objective.trim()
-                      ? params.objective.trim()
-                      : undefined;
-                  const context =
-                    typeof params.context === "string" && params.context.trim()
-                      ? params.context.trim()
+                  const prompt =
+                    typeof params.prompt === "string" && params.prompt.trim()
+                      ? params.prompt.trim()
                       : undefined;
                   const language =
                     typeof params.language === "string" && params.language.trim()
@@ -598,8 +585,7 @@ const voiceCallPlugin = {
                       : undefined;
                   const result = await rt.manager.initiateCall(to, sessionKey, {
                     message,
-                    objective,
-                    context,
+                    prompt,
                     language,
                     mode:
                       params.mode === "notify" || params.mode === "conversation"
@@ -705,13 +691,9 @@ const voiceCallPlugin = {
                 typeof params.message === "string" && params.message.trim()
                   ? params.message.trim()
                   : undefined,
-              objective:
-                typeof params.objective === "string" && params.objective.trim()
-                  ? params.objective.trim()
-                  : undefined,
-              context:
-                typeof params.context === "string" && params.context.trim()
-                  ? params.context.trim()
+              prompt:
+                typeof params.prompt === "string" && params.prompt.trim()
+                  ? params.prompt.trim()
                   : undefined,
               language:
                 typeof params.language === "string" && params.language.trim()
@@ -794,7 +776,7 @@ function extractTelegramChatId(sessionKey: string): string | null {
 function buildCallSummary(
   call: CallRecord,
   transcript: Array<{ speaker: string; text: string }>,
-  objective: string,
+  prompt: string,
   durationSec: number,
 ): string {
   const lines: string[] = [];
@@ -808,9 +790,10 @@ function buildCallSummary(
     lines.push(`Звонок завершён (${call.endReason ?? call.state}).`);
   }
 
-  // Objective
-  if (objective) {
-    lines.push(`Задача: ${objective}`);
+  // Task description (first 150 chars of prompt)
+  if (prompt) {
+    const short = prompt.length > 150 ? `${prompt.slice(0, 150)}…` : prompt;
+    lines.push(`Задача: ${short}`);
   }
 
   // Duration

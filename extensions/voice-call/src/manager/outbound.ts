@@ -59,8 +59,7 @@ export async function initiateCall(
   const opts: OutboundCallOptions =
     typeof options === "string" ? { message: options } : (options ?? {});
   const initialMessage = opts.message?.trim();
-  const objective = opts.objective?.trim() || initialMessage;
-  const context = opts.context?.trim();
+  const prompt = opts.prompt?.trim();
   const language = opts.language?.trim();
   const mode = opts.mode ?? ctx.config.outbound.defaultMode;
 
@@ -98,9 +97,8 @@ export async function initiateCall(
     transcript: [],
     processedEventIds: [],
     metadata: {
+      ...(prompt && { prompt }),
       ...(initialMessage && { initialMessage }),
-      ...(objective && { objective }),
-      ...(context && { context }),
       ...(language && { language }),
       mode,
     },

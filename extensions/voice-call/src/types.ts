@@ -238,12 +238,10 @@ export type StopListeningInput = {
 // -----------------------------------------------------------------------------
 
 export type OutboundCallOptions = {
-  /** Message to speak when call connects */
+  /** Message to speak when call connects (notify mode) */
   message?: string;
-  /** Core task objective for the voice model (defaults to message when omitted) */
-  objective?: string;
-  /** Additional context passed from the originating text session */
-  context?: string;
+  /** Complete voice model instruction — single source of truth for realtime-conversation */
+  prompt?: string;
   /** Preferred conversation language hint (e.g. "ru", "en") */
   language?: string;
   /** Call mode (overrides config default) */

@@ -264,78 +264,44 @@ export class VoiceCallWebhookServer {
     console.log(
       `[voice-call] buildRealtimeConversationContext: providerCallId=${providerCallId}, ` +
         `callFound=${!!call}, callId=${call?.callId ?? "none"}, ` +
-        `metadata=${JSON.stringify(call?.metadata ?? {})}`,
+        `metadata keys=${Object.keys(call?.metadata ?? {}).join(",")}`,
     );
 
-    const rawObjective =
-      typeof call?.metadata?.objective === "string" ? call.metadata.objective.trim() : "";
-    const rawInitialMessage =
-      typeof call?.metadata?.initialMessage === "string" ? call.metadata.initialMessage.trim() : "";
-    const rawContext =
-      typeof call?.metadata?.context === "string" ? call.metadata.context.trim() : "";
-
-    // Strip phone numbers so the voice model doesn't read them aloud.
-    const objective = VoiceCallWebhookServer.stripPhoneNumbers(rawObjective);
-    const initialMessage = VoiceCallWebhookServer.stripPhoneNumbers(rawInitialMessage);
-    const context = VoiceCallWebhookServer.stripPhoneNumbers(rawContext);
     const language =
       typeof call?.metadata?.language === "string" ? call.metadata.language.trim() : "ru";
 
-    // Build task description from available metadata
-    const taskParts: string[] = [];
-    if (objective) {
-      taskParts.push(objective);
-    } else if (initialMessage) {
-      taskParts.push(initialMessage);
-    }
-    if (context && context !== objective && context !== initialMessage) {
-      taskParts.push(context);
-    }
-    const taskDescription = taskParts.join(". ");
+    // ── Primary path: unified prompt from text model ──
+    const rawPrompt = typeof call?.metadata?.prompt === "string" ? call.metadata.prompt.trim() : "";
 
-    // System instructions: WHO you are + HOW to behave + WHAT to do in THIS call.
-    // The task is included here so the model never "forgets" the objective,
-    // even after several conversational turns.
+    if (rawPrompt) {
+      const prompt = VoiceCallWebhookServer.stripPhoneNumbers(rawPrompt);
+      console.log(
+        `[voice-call] Using unified prompt for ${providerCallId} (${prompt.length} chars)`,
+      );
+      return {
+        // The complete prompt IS the system instructions — who you are,
+        // what to do, how to behave. Single source of truth.
+        instructions: prompt,
+        // Minimal trigger — do NOT duplicate instructions here.
+        // Duplicating caused the model to "rush" and confuse roles.
+        initialPrompt: "Начинай разговор.",
+        language,
+        voice: this.config.streaming?.assistantVoice,
+      };
+    }
+
+    // ── Fallback: no prompt, use config instructions only ──
     const configInstructions = this.config.streaming?.assistantInstructions?.trim();
-
-    const baseInstructions = configInstructions
-      ? configInstructions
-      : "Ты звонишь по телефону от имени клиента. Говори по-русски, коротко и естественно, как обычный человек. Поздоровайся, объясни зачем звонишь, и веди разговор по делу.";
-
-    // Append task so the model never forgets the objective across turns.
-    // Keep it minimal — no extra prohibitions that make the model "stiff".
-    const taskBlock = taskDescription ? `\n\nЗадание: ${taskDescription}` : "";
-
-    const instructions = `${baseInstructions}${taskBlock}`;
+    const instructions =
+      configInstructions ||
+      "Ты звонишь по телефону от имени клиента. Говори по-русски, коротко и естественно.";
 
     console.log(
-      `[voice-call] Realtime instructions for ${providerCallId}: ` +
-        `instructionsLength=${instructions.length}, ` +
-        `task="${taskDescription.slice(0, 200)}", language=${language}`,
+      `[voice-call] No prompt for ${providerCallId}, using config instructions (${instructions.length} chars)`,
     );
-
-    // Inject the task as a conversation item (role: user) so the model has
-    // concrete context for its very first reply.  Keep it clean: ONLY the
-    // objective and context — no behavioral instructions (those live in the
-    // system instructions above).  This mirrors how you'd prompt the model
-    // directly on OpenAI's Realtime platform.
-    let initialPrompt: string | undefined;
-    if (objective || initialMessage) {
-      const parts: string[] = [];
-      if (objective) {
-        parts.push(objective);
-      } else if (initialMessage) {
-        parts.push(initialMessage);
-      }
-      if (context && context !== objective && context !== initialMessage) {
-        parts.push(`Контекст: ${context}`);
-      }
-      initialPrompt = parts.join("\n");
-    }
 
     return {
       instructions,
-      initialPrompt,
       language,
       voice: this.config.streaming?.assistantVoice,
     };
@@ -345,7 +311,17 @@ export class VoiceCallWebhookServer {
    * Strip E.164 phone numbers from text so the voice model won't read them aloud.
    */
   private static stripPhoneNumbers(text: string): string {
-    return text.replace(/\+[1-9]\d{6,14}/g, "").trim();
+    return (
+      text
+        // E.164: +79608210000
+        .replace(/\+[1-9]\d{6,14}/g, "")
+        // With spaces/dashes: +7 960 821-01-78, +7-960-821-01-78
+        .replace(/\+\d[\d\s\-()]{8,18}\d/g, "")
+        // Phrases like "контактный номер ...", "телефон для связи ..."
+        .replace(/(?:контактн\S*\s+(?:номер|телефон)|телефон\s+для\s+связи)[:\s]*\S*/gi, "")
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    );
   }
 
   private isCarrierAnnouncementTranscript(transcript: string): boolean {
@@ -551,11 +527,12 @@ export class VoiceCallWebhookServer {
         userMessage,
         sessionKey: call.sessionKey,
         objective:
-          (typeof call.metadata?.objective === "string" ? call.metadata.objective.trim() : "") ||
-          (typeof call.metadata?.initialMessage === "string"
-            ? call.metadata.initialMessage.trim()
-            : ""),
-        context: typeof call.metadata?.context === "string" ? call.metadata.context.trim() : "",
+          typeof call.metadata?.prompt === "string"
+            ? call.metadata.prompt.trim()
+            : typeof call.metadata?.initialMessage === "string"
+              ? call.metadata.initialMessage.trim()
+              : "",
+        context: "",
         language: typeof call.metadata?.language === "string" ? call.metadata.language.trim() : "",
       });
 
