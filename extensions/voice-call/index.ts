@@ -147,8 +147,14 @@ const VoiceCallToolSchema = Type.Union([
     prompt: Type.Optional(
       Type.String({
         description:
-          "Complete instruction for the voice model: who it is, what to accomplish, " +
-          "current call situation. NEVER include phone numbers.",
+          "System instructions for the voice model. Build from the user's Telegram message using this structure:\n" +
+          "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с разными ежедневными делами.'\n" +
+          "(2) TASK: Summary of what the user needs (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
+          "(3) CONTEXT: Explain that we already found the right number and are connecting to the right person " +
+          "(e.g. 'Мы нашли номер ресторана и соединяем тебя с хостес, которая может забронировать столик').\n" +
+          "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. " +
+          "Если перебивают — остановись и слушай.'\n" +
+          "Keep the prompt concise. Phone numbers are OK to include.",
       }),
     ),
     language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
@@ -550,7 +556,15 @@ const voiceCallPlugin = {
       return {
         name: "voice_call",
         label: "Voice Call",
-        description: "Make phone calls and have voice conversations via the voice-call plugin.",
+        description:
+          "Make phone calls via voice-call plugin. " +
+          "For initiate_call with mode=conversation, ALWAYS provide the `prompt` field. " +
+          "The prompt is system instructions for the voice model and must follow this structure:\n" +
+          "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с разными ежедневными делами.'\n" +
+          "(2) TASK: Summary of what the user needs from the Telegram message (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
+          "(3) CONTEXT: We already found the right number and are connecting to the right person (e.g. 'Мы нашли номер ресторана и соединяем тебя с хостес').\n" +
+          "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. Если перебивают — остановись и слушай.'\n" +
+          "Keep the prompt concise. Phone numbers are OK to include.",
         parameters: VoiceCallToolSchema,
         async execute(_toolCallId, params) {
           const json = (payload: unknown) => ({
@@ -578,7 +592,7 @@ const voiceCallPlugin = {
                   const prompt =
                     typeof params.prompt === "string" && params.prompt.trim()
                       ? params.prompt.trim()
-                      : undefined;
+                      : `Ты — консьерж-сервис, помогаешь людям с ежедневными делами. Задача: ${message}. Веди живой диалог, говори спокойно, 1-2 предложения за реплику.`;
                   const language =
                     typeof params.language === "string" && params.language.trim()
                       ? params.language.trim()

@@ -274,7 +274,7 @@ export class VoiceCallWebhookServer {
     const rawPrompt = typeof call?.metadata?.prompt === "string" ? call.metadata.prompt.trim() : "";
 
     if (rawPrompt) {
-      const prompt = VoiceCallWebhookServer.stripPhoneNumbers(rawPrompt);
+      const prompt = rawPrompt;
       console.log(
         `[voice-call] Using unified prompt for ${providerCallId} (${prompt.length} chars)`,
       );

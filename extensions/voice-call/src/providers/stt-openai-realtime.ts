@@ -318,6 +318,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         instructions,
         voice,
         temperature: 0.8,
+        max_response_output_tokens: 150,
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         // NOTE: input_audio_transcription intentionally omitted.
