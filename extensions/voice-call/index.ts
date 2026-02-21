@@ -143,20 +143,16 @@ const VoiceCallToolSchema = Type.Union([
   Type.Object({
     action: Type.Literal("initiate_call"),
     to: Type.Optional(Type.String({ description: "Call target" })),
-    message: Type.String({ description: "Intro message for notify mode" }),
-    prompt: Type.Optional(
-      Type.String({
-        description:
-          "System instructions for the voice model. Build from the user's Telegram message using this structure:\n" +
-          "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с разными ежедневными делами.'\n" +
-          "(2) TASK: Summary of what the user needs (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
-          "(3) CONTEXT: The call is already connected — say who is on the line " +
-          "(e.g. 'Ты уже на линии с хостес ресторана').\n" +
-          "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. " +
-          "Если перебивают — остановись и слушай.'\n" +
-          "Keep the prompt concise. Phone numbers are OK to include.",
-      }),
-    ),
+    prompt: Type.String({
+      description:
+        "System instructions for the voice model. Build from the user's Telegram message:\n" +
+        "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с ежедневными делами.'\n" +
+        "(2) TASK: Short summary of the goal (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
+        "(3) CONTEXT: 'Ты уже на линии с [кто на линии].' (e.g. 'Ты уже на линии с хостес ресторана').\n" +
+        "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. " +
+        "Если перебивают — остановись и слушай.'",
+    }),
+    message: Type.Optional(Type.String({ description: "Fallback intro text (for notify mode)" })),
     language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
     mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
   }),
@@ -558,13 +554,12 @@ const voiceCallPlugin = {
         label: "Voice Call",
         description:
           "Make phone calls via voice-call plugin. " +
-          "For initiate_call with mode=conversation, ALWAYS provide the `prompt` field. " +
-          "The prompt is system instructions for the voice model and must follow this structure:\n" +
-          "(1) ROLE (constant): 'Ты — консьерж-сервис, который помогает людям с разными ежедневными делами.'\n" +
-          "(2) TASK: Summary of what the user needs from the Telegram message (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
-          "(3) CONTEXT: The call is already connected — say who is on the line (e.g. 'Ты уже на линии с хостес ресторана').\n" +
-          "(4) BEHAVIOR (constant): 'Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. Если перебивают — остановись и слушай.'\n" +
-          "Keep the prompt concise. Phone numbers are OK to include.",
+          "The required `prompt` field is system instructions for the voice model. " +
+          "Build it from the user's Telegram message using 4 blocks:\n" +
+          "(1) ROLE: 'Ты — консьерж-сервис, который помогает людям с ежедневными делами.'\n" +
+          "(2) TASK: Short goal summary (e.g. 'Забронировать столик на имя Елена на завтра 20:00').\n" +
+          "(3) CONTEXT: 'Ты уже на линии с [person].' (e.g. 'Ты уже на линии с хостес ресторана').\n" +
+          "(4) BEHAVIOR: 'Веди живой диалог, говори спокойно и коротко. Если перебивают — остановись и слушай.'",
         parameters: VoiceCallToolSchema,
         async execute(_toolCallId, params) {
           const json = (payload: unknown) => ({
@@ -578,9 +573,9 @@ const voiceCallPlugin = {
             if (typeof params?.action === "string") {
               switch (params.action) {
                 case "initiate_call": {
-                  const message = String(params.message || "").trim();
-                  if (!message) {
-                    throw new Error("message required");
+                  const prompt = String(params.prompt || "").trim();
+                  if (!prompt) {
+                    throw new Error("prompt required");
                   }
                   const to =
                     typeof params.to === "string" && params.to.trim()
@@ -589,15 +584,10 @@ const voiceCallPlugin = {
                   if (!to) {
                     throw new Error("to required");
                   }
-                  const prompt =
-                    typeof params.prompt === "string" && params.prompt.trim()
-                      ? params.prompt.trim()
-                      : `Ты — консьерж-сервис, который помогает людям с ежедневными делами. ` +
-                        `Ты уже на линии с собеседником по телефону. ` +
-                        `Твоя задача: ${message} ` +
-                        `Веди живой диалог, говори спокойно и коротко, 1-2 предложения за реплику. ` +
-                        `Если перебивают — остановись и слушай. ` +
-                        `Не выдумывай информацию, которой у тебя нет.`;
+                  const message =
+                    typeof params.message === "string" && params.message.trim()
+                      ? params.message.trim()
+                      : prompt;
                   const language =
                     typeof params.language === "string" && params.language.trim()
                       ? params.language.trim()
