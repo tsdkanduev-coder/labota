@@ -112,15 +112,38 @@ describe("voice-call plugin", () => {
     expect(methods.has("voicecall.start")).toBe(true);
   });
 
-  it("initiates a call via voicecall.initiate", async () => {
+  it("initiates a call via voicecall.initiate with prompt", async () => {
+    const { methods } = setup({ provider: "mock" });
+    const handler = methods.get("voicecall.initiate");
+    const respond = vi.fn();
+    await handler?.({ params: { prompt: "Забронировать столик" }, respond });
+    expect(runtimeStub.manager.initiateCall).toHaveBeenCalled();
+    const [ok, payload] = respond.mock.calls[0];
+    expect(ok).toBe(true);
+    expect(payload.callId).toBe("call-1");
+  });
+
+  it("voicecall.initiate falls back to message when prompt missing", async () => {
     const { methods } = setup({ provider: "mock" });
     const handler = methods.get("voicecall.initiate");
     const respond = vi.fn();
     await handler?.({ params: { message: "Hi" }, respond });
     expect(runtimeStub.manager.initiateCall).toHaveBeenCalled();
-    const [ok, payload] = respond.mock.calls[0];
+    const opts = runtimeStub.manager.initiateCall.mock.calls[0][2];
+    expect(opts.prompt).toBe("Hi");
+    const [ok] = respond.mock.calls[0];
     expect(ok).toBe(true);
-    expect(payload.callId).toBe("call-1");
+  });
+
+  it("voicecall.initiate errors when neither prompt nor message given", async () => {
+    const { methods } = setup({ provider: "mock" });
+    const handler = methods.get("voicecall.initiate");
+    const respond = vi.fn();
+    await handler?.({ params: {}, respond });
+    expect(runtimeStub.manager.initiateCall).not.toHaveBeenCalled();
+    const [ok, payload] = respond.mock.calls[0];
+    expect(ok).toBe(false);
+    expect(payload.error).toContain("prompt or message required");
   });
 
   it("returns call status", async () => {
@@ -158,7 +181,7 @@ describe("voice-call plugin", () => {
     await tool.execute("id", {
       action: "initiate_call",
       to: "+15550001111",
-      message: "hello",
+      prompt: "Забронировать столик на имя Елена",
     });
     expect(runtimeStub.manager.initiateCall).toHaveBeenCalledWith(
       "+15550001111",
@@ -167,27 +190,34 @@ describe("voice-call plugin", () => {
     );
   });
 
-  it("tool initiate_call forwards objective/context/language metadata", async () => {
+  it("tool initiate_call forwards prompt and language metadata", async () => {
     const { tools } = setup({ provider: "mock" });
     const tool = resolveVoiceCallTool(tools[0], "agent:main:telegram:dm:user-42");
     await tool.execute("id", {
       action: "initiate_call",
       to: "+15550001111",
-      message: "Позвоните и уточните бронь",
-      objective: "Подтвердить бронь на 2 гостей на 19:00",
-      context: "Имя клиента: Тсевдн. Если мест нет, спросить альтернативу.",
+      prompt: "Забронировать столик на 2 гостей на 19:00 на имя Тсевдн",
       language: "ru",
     });
     expect(runtimeStub.manager.initiateCall).toHaveBeenCalledWith(
       "+15550001111",
       "agent:main:telegram:dm:user-42",
       expect.objectContaining({
-        message: "Позвоните и уточните бронь",
-        objective: "Подтвердить бронь на 2 гостей на 19:00",
-        context: "Имя клиента: Тсевдн. Если мест нет, спросить альтернативу.",
+        prompt: "Забронировать столик на 2 гостей на 19:00 на имя Тсевдн",
         language: "ru",
       }),
     );
+  });
+
+  it("tool initiate_call rejects when prompt is missing", async () => {
+    const { tools } = setup({ provider: "mock" });
+    const tool = resolveVoiceCallTool(tools[0], "agent:main:telegram:dm:user-42");
+    const result = (await tool.execute("id", {
+      action: "initiate_call",
+      to: "+15550001111",
+    })) as { details: { error?: string } };
+    expect(runtimeStub.manager.initiateCall).not.toHaveBeenCalled();
+    expect(result.details.error).toContain("prompt required");
   });
 
   it("tool get_call_history is scoped by session by default", async () => {
@@ -209,7 +239,7 @@ describe("voice-call plugin", () => {
     const { methods } = setup({ provider: "mock" });
     const initiate = methods.get("voicecall.initiate");
     const respond = vi.fn();
-    await initiate?.({ params: { message: "Hi", to: "+15550001111" }, respond });
+    await initiate?.({ params: { prompt: "Подтвердить бронь", to: "+15550001111" }, respond });
 
     expect(runtimeStub.manager.setOnCallEndedHook).toHaveBeenCalledTimes(1);
     const onCallEnded = runtimeStub.manager.setOnCallEndedHook.mock.calls[0]?.[0] as
@@ -228,8 +258,7 @@ describe("voice-call plugin", () => {
       endedAt: 1700000005000,
       sessionKey: "agent:main:telegram:dm:test-user",
       metadata: {
-        objective: "Подтвердить бронь",
-        context: "Имя: Test User",
+        prompt: "Подтвердить бронь",
       },
       transcript: [
         { speaker: "bot", text: "Здравствуйте", timestamp: 1700000001000 },

@@ -145,17 +145,11 @@ const VoiceCallToolSchema = Type.Union([
     to: Type.Optional(Type.String({ description: "Call target" })),
     prompt: Type.String({
       description:
-        "System instructions for the voice model. Build from the user's Telegram message using exactly 4 blocks.\n" +
-        "IMPORTANT: Output ONLY these 4 blocks as plain Russian text. Do NOT add any extra instructions, " +
-        "questions, or clarifications — the voice model must receive a clean, short prompt.\n\n" +
-        "(1) ROLE (constant, copy exactly): 'Ты позвонил в заведение. Ты уже на линии с сотрудником. Звонок уже идёт.'\n" +
-        "(2) TASK: State ONLY the concrete known facts from the user message as a single sentence " +
-        "(e.g. 'Тебе нужно забронировать столик на имя Елена, завтра 20:00, 4 гостя.'). " +
-        "If a detail is missing (e.g. number of guests), do NOT mention it at all — just skip it.\n" +
-        "(3) CONTEXT (constant, copy exactly): 'Человек на линии — сотрудник заведения. Говори с ним напрямую. " +
-        "Никого другого в разговоре нет. Не говори что будешь звонить — ты уже звонишь.'\n" +
-        "(4) BEHAVIOR (constant, copy exactly): 'Говори спокойно и коротко, 1-2 предложения. " +
-        "Отвечай на вопросы. Если не знаешь деталь — скажи что уточнишь позже. Если перебивают — слушай.'",
+        "Short task description extracted from the user's message. " +
+        "State ONLY the concrete known facts as one sentence in Russian " +
+        "(e.g. 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'). " +
+        "If a detail is missing (e.g. number of guests), skip it — do NOT mention it. " +
+        "Do NOT add any behavioral instructions or role descriptions — just the task.",
     }),
     message: Type.Optional(Type.String({ description: "Fallback intro text (for notify mode)" })),
     language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
@@ -372,10 +366,18 @@ const voiceCallPlugin = {
       "voicecall.initiate",
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
         try {
+          const prompt = typeof params?.prompt === "string" ? params.prompt.trim() : "";
           const message = typeof params?.message === "string" ? params.message.trim() : "";
-          if (!message) {
-            respond(false, { error: "message required" });
+          const effectivePrompt = prompt || message;
+          if (!effectivePrompt) {
+            respond(false, { error: "prompt or message required" });
             return;
+          }
+          if (!prompt && message) {
+            console.warn(
+              "[voice-call] voicecall.initiate called with message but no prompt — " +
+                "please migrate to the prompt field",
+            );
           }
           const rt = await ensureRuntime();
           const to =
@@ -388,10 +390,6 @@ const voiceCallPlugin = {
           }
           const mode =
             params?.mode === "notify" || params?.mode === "conversation" ? params.mode : undefined;
-          const prompt =
-            typeof params?.prompt === "string" && params.prompt.trim()
-              ? params.prompt.trim()
-              : undefined;
           const language =
             typeof params?.language === "string" && params.language.trim()
               ? params.language.trim()
@@ -403,8 +401,8 @@ const voiceCallPlugin = {
               ? params.sessionKey.trim()
               : undefined;
           const result = await rt.manager.initiateCall(to, gatewaySessionKey, {
-            message,
-            prompt,
+            message: message || effectivePrompt,
+            prompt: effectivePrompt,
             language,
             mode,
           });
@@ -559,16 +557,10 @@ const voiceCallPlugin = {
         label: "Voice Call",
         description:
           "Make phone calls via voice-call plugin. " +
-          "The required `prompt` field is system instructions for the voice model. " +
-          "Build it from the user's Telegram message using exactly 4 blocks. " +
-          "Output ONLY these blocks as plain Russian text, no extras:\n" +
-          "(1) ROLE: 'Ты позвонил в заведение. Ты уже на линии с сотрудником. Звонок уже идёт.'\n" +
-          "(2) TASK: ONLY known facts as one sentence (e.g. 'Тебе нужно забронировать столик на имя Елена, завтра 20:00, 4 гостя.'). " +
-          "If a detail is missing, skip it entirely — do NOT mention it.\n" +
-          "(3) CONTEXT: 'Человек на линии — сотрудник заведения. Говори с ним напрямую. " +
-          "Никого другого в разговоре нет. Не говори что будешь звонить — ты уже звонишь.'\n" +
-          "(4) BEHAVIOR: 'Говори спокойно и коротко, 1-2 предложения. " +
-          "Отвечай на вопросы. Если не знаешь деталь — скажи что уточнишь позже. Если перебивают — слушай.'",
+          "For initiate_call, the `prompt` field should contain ONLY the task — " +
+          "a short sentence with known facts from the user's message " +
+          "(e.g. 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'). " +
+          "Do NOT add role, context, or behavioral instructions — just the task.",
         parameters: VoiceCallToolSchema,
         async execute(_toolCallId, params) {
           const json = (payload: unknown) => ({
@@ -827,7 +819,8 @@ function buildCallSummary(
     lines.push("Ключевые реплики:");
     const recent = transcript.slice(-6);
     for (const entry of recent) {
-      const speaker = entry.speaker === "assistant" ? "Бот" : "Собеседник";
+      const speaker =
+        entry.speaker === "bot" || entry.speaker === "assistant" ? "Бот" : "Собеседник";
       lines.push(`— ${speaker}: ${entry.text}`);
     }
   }

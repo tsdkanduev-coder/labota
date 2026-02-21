@@ -18,6 +18,12 @@ export interface RealtimeConversationContext {
   instructions?: string;
   /** Optional initial user prompt to trigger the first assistant response */
   initialPrompt?: string;
+  /**
+   * If true, the first response.create uses a one-time per-response instruction
+   * to force a natural opening (greet + state goal).  Subsequent responses use
+   * only the session-level instructions.
+   */
+  forceOpening?: boolean;
   /** Preferred language hint */
   language?: string;
   /** Assistant voice (OpenAI realtime voice id) */
@@ -328,7 +334,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         modalities: ["text", "audio"],
         instructions,
         voice,
-        temperature: 0.8,
+        temperature: 0.6,
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         input_audio_transcription: {
@@ -350,31 +356,24 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         return;
       }
 
-      const initialPrompt = this.conversation?.initialPrompt?.trim();
-      if (initialPrompt) {
-        console.log(
-          `[Realtime] session.updated confirmed, injecting initial context (${initialPrompt.length} chars) and triggering response`,
-        );
-        this.sendEvent({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: initialPrompt }],
-          },
-        });
-      } else {
-        console.log(
-          `[Realtime] session.updated confirmed, triggering first response (no initial prompt)`,
-        );
-      }
+      // One-time per-response instruction for the first turn only.
+      // Forces a natural opening (greet + state goal) without polluting
+      // the persistent session instructions.
+      const forceOpening = this.conversation?.forceOpening !== false;
+      const firstTurnInstruction = forceOpening
+        ? "Начни разговор естественно: коротко поздоровайся и в одной фразе озвучь цель звонка. Без служебных пояснений."
+        : undefined;
 
-      // Always trigger the first assistant turn — the model speaks first
-      // based on its instructions (who it is, what to do, etc.).
+      console.log(
+        `[Realtime] session.updated confirmed, triggering first response` +
+          (firstTurnInstruction ? " (with forced opening)" : ""),
+      );
+
       this.sendEvent({
         type: "response.create",
         response: {
           modalities: ["text", "audio"],
+          ...(firstTurnInstruction ? { instructions: firstTurnInstruction } : {}),
         },
       });
     });
