@@ -247,12 +247,23 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
 
       this.ws.on("close", (code, reason) => {
         console.log(
-          `[Realtime] WebSocket closed (code: ${code}, reason: ${reason?.toString() || "none"})`,
+          `[Realtime] WebSocket closed (code: ${code}, reason: ${reason?.toString() || "none"}, mode=${this.mode})`,
         );
         this.connected = false;
 
         if (!this.closed) {
-          void this.attemptReconnect();
+          if (this.mode === "conversation") {
+            // In conversation mode, reconnect would lose all conversation
+            // context (OpenAI Realtime doesn't preserve state across WS
+            // connections). Better to let the call end gracefully.
+            console.warn(
+              "[Realtime] Conversation session lost — not reconnecting to avoid context reset",
+            );
+            this.closed = true;
+            this.onCloseCallback?.();
+          } else {
+            void this.attemptReconnect();
+          }
         }
       });
 
@@ -506,26 +517,10 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       }
 
       case "response.output_item.done": {
-        if (this.mode !== "conversation") {
-          return;
-        }
-        const item = this.toRecord(event.item);
-        const content = Array.isArray(item?.content) ? item?.content : [];
-        const textParts: string[] = [];
-        for (const part of content) {
-          const record = this.toRecord(part);
-          if (!record) {
-            continue;
-          }
-          const value = this.readString(record, "text") || this.readString(record, "transcript");
-          if (value) {
-            textParts.push(value);
-          }
-        }
-        const text = textParts.join(" ").trim();
-        if (text) {
-          this.onAssistantTranscriptCallback?.(text);
-        }
+        // NOTE: Not emitting assistant transcript here — it's already
+        // emitted by response.audio_transcript.done / response.output_text.done.
+        // Emitting from both events caused every bot reply to appear twice
+        // in the call transcript.
         return;
       }
 
