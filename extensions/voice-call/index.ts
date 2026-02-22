@@ -339,6 +339,9 @@ const voiceCallPlugin = {
         // sessionKey (format: "agent:<id>:telegram:<type>:<chatId>...")
         // and send a formatted summary immediately.
         const telegramChatId = extractTelegramChatId(sessionKey);
+        console.log(
+          `[voice-call] onCallEnded: sessionKey=${sessionKey}, telegramChatId=${telegramChatId}`,
+        );
         if (telegramChatId) {
           const summary = buildCallSummary(call, transcript, prompt, durationSec);
           api.logger.info(
@@ -366,6 +369,9 @@ const voiceCallPlugin = {
       "voicecall.initiate",
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
         try {
+          console.log(
+            `[voice-call] voicecall.initiate called via GATEWAY, params.sessionKey=${params?.sessionKey}`,
+          );
           const prompt = typeof params?.prompt === "string" ? params.prompt.trim() : "";
           const message = typeof params?.message === "string" ? params.message.trim() : "";
           const effectivePrompt = prompt || message;
@@ -552,6 +558,9 @@ const voiceCallPlugin = {
         typeof toolCtx.sessionKey === "string" && toolCtx.sessionKey.trim()
           ? toolCtx.sessionKey.trim()
           : undefined;
+      console.log(
+        `[voice-call] registerTool: toolCtx.sessionKey=${toolCtx.sessionKey}, resolved=${sessionKey}`,
+      );
       return {
         name: "voice_call",
         label: "Voice Call",
@@ -575,6 +584,7 @@ const voiceCallPlugin = {
             if (typeof params?.action === "string") {
               switch (params.action) {
                 case "initiate_call": {
+                  console.log(`[voice-call] initiate_call via TOOL, sessionKey=${sessionKey}`);
                   const prompt = String(params.prompt || "").trim();
                   if (!prompt) {
                     throw new Error("prompt required");
