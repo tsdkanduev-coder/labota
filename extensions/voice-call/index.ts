@@ -145,11 +145,11 @@ const VoiceCallToolSchema = Type.Union([
     to: Type.Optional(Type.String({ description: "Call target" })),
     prompt: Type.String({
       description:
-        "Short task description extracted from the user's message. " +
-        "State ONLY the concrete known facts as one sentence in Russian " +
-        "(e.g. 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'). " +
-        "If a detail is missing (e.g. number of guests), skip it — do NOT mention it. " +
-        "Do NOT add any behavioral instructions or role descriptions — just the task.",
+        "Task for the voice call in one sentence in Russian. " +
+        "MUST include three mandatory details: (1) guest name, (2) date/time, (3) number of guests. " +
+        "If any of these are missing from the user's message, ask the user BEFORE calling — do NOT call without them. " +
+        "Example: 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'. " +
+        "Do NOT add behavioral instructions or role descriptions — just the task.",
     }),
     message: Type.Optional(Type.String({ description: "Fallback intro text (for notify mode)" })),
     language: Type.Optional(Type.String({ description: "Preferred language code (ru/en/etc)" })),
@@ -557,10 +557,11 @@ const voiceCallPlugin = {
         label: "Voice Call",
         description:
           "Make phone calls via voice-call plugin. " +
-          "For initiate_call, the `prompt` field should contain ONLY the task — " +
-          "a short sentence with known facts from the user's message " +
-          "(e.g. 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'). " +
-          "Do NOT add role, context, or behavioral instructions — just the task.",
+          "For initiate_call, `prompt` MUST contain the task with three required details: " +
+          "guest name, date/time, and number of guests. " +
+          "If any detail is missing, ask the user first — never call without all three. " +
+          "Example: 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'. " +
+          "Do NOT add role or behavioral instructions — just the task.",
         parameters: VoiceCallToolSchema,
         async execute(_toolCallId, params) {
           const json = (payload: unknown) => ({

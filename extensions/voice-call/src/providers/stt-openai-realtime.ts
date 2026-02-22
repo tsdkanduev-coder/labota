@@ -361,7 +361,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       // the persistent session instructions.
       const forceOpening = this.conversation?.forceOpening !== false;
       const firstTurnInstruction = forceOpening
-        ? "Начни разговор естественно: коротко поздоровайся и в одной фразе озвучь цель звонка. Без служебных пояснений."
+        ? "Начни как в примерах: поздоровайся и сразу озвучь задачу одной фразой. Без служебных пояснений."
         : undefined;
 
       console.log(
