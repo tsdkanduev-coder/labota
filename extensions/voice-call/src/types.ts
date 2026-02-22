@@ -154,6 +154,7 @@ export const CallRecordSchema = z.object({
   from: z.string(),
   to: z.string(),
   sessionKey: z.string().optional(),
+  messageTo: z.string().optional(),
   startedAt: z.number(),
   answeredAt: z.number().optional(),
   endedAt: z.number().optional(),
@@ -246,6 +247,8 @@ export type OutboundCallOptions = {
   language?: string;
   /** Call mode (overrides config default) */
   mode?: CallMode;
+  /** Delivery target for proactive messages back to user (e.g. "telegram:direct:-123456789") */
+  messageTo?: string;
 };
 
 // -----------------------------------------------------------------------------

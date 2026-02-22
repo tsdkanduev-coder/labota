@@ -60,6 +60,8 @@ export type OpenClawPluginToolContext = {
   agentDir?: string;
   agentId?: string;
   sessionKey?: string;
+  /** Delivery target for proactive messages (e.g. "telegram:direct:-123456789"). */
+  messageTo?: string;
   messageChannel?: string;
   agentAccountId?: string;
   sandboxed?: boolean;

@@ -338,10 +338,8 @@ const voiceCallPlugin = {
         // write something. We extract the Telegram chat ID from the
         // sessionKey (format: "agent:<id>:telegram:<type>:<chatId>...")
         // and send a formatted summary immediately.
-        const telegramChatId = extractTelegramChatId(sessionKey);
-        console.log(
-          `[voice-call] onCallEnded: sessionKey=${sessionKey}, telegramChatId=${telegramChatId}`,
-        );
+        const telegramChatId =
+          extractTelegramChatId(sessionKey) ?? extractChatIdFromMessageTo(call.messageTo);
         if (telegramChatId) {
           const summary = buildCallSummary(call, transcript, prompt, durationSec);
           api.logger.info(
@@ -369,9 +367,6 @@ const voiceCallPlugin = {
       "voicecall.initiate",
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
         try {
-          console.log(
-            `[voice-call] voicecall.initiate called via GATEWAY, params.sessionKey=${params?.sessionKey}`,
-          );
           const prompt = typeof params?.prompt === "string" ? params.prompt.trim() : "";
           const message = typeof params?.message === "string" ? params.message.trim() : "";
           const effectivePrompt = prompt || message;
@@ -558,9 +553,10 @@ const voiceCallPlugin = {
         typeof toolCtx.sessionKey === "string" && toolCtx.sessionKey.trim()
           ? toolCtx.sessionKey.trim()
           : undefined;
-      console.log(
-        `[voice-call] registerTool: toolCtx.sessionKey=${toolCtx.sessionKey}, resolved=${sessionKey}`,
-      );
+      const messageTo =
+        typeof toolCtx.messageTo === "string" && toolCtx.messageTo.trim()
+          ? toolCtx.messageTo.trim()
+          : undefined;
       return {
         name: "voice_call",
         label: "Voice Call",
@@ -584,7 +580,6 @@ const voiceCallPlugin = {
             if (typeof params?.action === "string") {
               switch (params.action) {
                 case "initiate_call": {
-                  console.log(`[voice-call] initiate_call via TOOL, sessionKey=${sessionKey}`);
                   const prompt = String(params.prompt || "").trim();
                   if (!prompt) {
                     throw new Error("prompt required");
@@ -612,6 +607,7 @@ const voiceCallPlugin = {
                       params.mode === "notify" || params.mode === "conversation"
                         ? params.mode
                         : undefined,
+                    messageTo,
                   });
                   if (!result.success) {
                     throw new Error(result.error || "initiate failed");
@@ -784,8 +780,19 @@ const voiceCallPlugin = {
  * Returns the chat ID string (e.g. "-100123456789") or null if not a Telegram session.
  */
 function extractTelegramChatId(sessionKey: string): string | null {
-  // Match "telegram:dm:<id>" or "telegram:group:<id>" patterns
-  const match = sessionKey.match(/telegram:(?:dm|group):(-?\d+)/);
+  // Match "telegram:dm:<id>" or "telegram:group:<id>" or "telegram:direct:<id>" patterns
+  const match = sessionKey.match(/telegram:(?:dm|group|direct):(-?\d+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Extract a Telegram chat ID from a messageTo delivery target.
+ * messageTo follows the pattern: "telegram:<type>:<chatId>" where <type> is "direct", "dm", "group".
+ * This is a fallback for when sessionKey doesn't contain the chatId (e.g. dmScope="main").
+ */
+function extractChatIdFromMessageTo(messageTo?: string): string | null {
+  if (!messageTo) return null;
+  const match = messageTo.match(/^telegram:(?:direct|dm|group):(-?\d+)/);
   return match ? match[1] : null;
 }
 

@@ -30,6 +30,8 @@ ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
 ENV NODE_ENV=production
+# Enable experimental node:sqlite for the built-in memory system (BM25 + vector search).
+ENV NODE_OPTIONS="--experimental-sqlite"
 
 # Allow non-root user to write temp files during runtime/tests.
 RUN chown -R node:node /app

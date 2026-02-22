@@ -93,6 +93,7 @@ export async function initiateCall(
     from,
     to,
     sessionKey,
+    messageTo: opts.messageTo,
     startedAt: Date.now(),
     transcript: [],
     processedEventIds: [],
