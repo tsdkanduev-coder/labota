@@ -24,6 +24,8 @@ export interface RealtimeConversationContext {
    * only the session-level instructions.
    */
   forceOpening?: boolean;
+  /** Short task string for forced opening (e.g. "забронировать столик на завтра 20:00") */
+  task?: string;
   /** Preferred language hint */
   language?: string;
   /** Assistant voice (OpenAI realtime voice id) */
@@ -342,7 +344,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         },
         turn_detection: {
           type: "semantic_vad",
-          eagerness: "high",
+          eagerness: "medium",
           create_response: true,
         },
       },
@@ -360,8 +362,11 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       // Forces a natural opening (greet + state goal) without polluting
       // the persistent session instructions.
       const forceOpening = this.conversation?.forceOpening !== false;
+      const task = this.conversation?.task;
       const firstTurnInstruction = forceOpening
-        ? "Начни как в примерах: поздоровайся и сразу озвучь задачу одной фразой. Без служебных пояснений."
+        ? task
+          ? `Поздоровайся и сразу скажи цель звонка: ${task}. Одна фраза, потом замолчи и жди ответа.`
+          : "Поздоровайся и сразу озвучь цель звонка одной фразой. Потом замолчи и жди ответа."
         : undefined;
 
       console.log(
