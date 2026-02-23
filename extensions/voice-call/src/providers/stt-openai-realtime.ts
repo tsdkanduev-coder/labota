@@ -344,7 +344,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         },
         turn_detection: {
           type: "semantic_vad",
-          eagerness: "high",
+          eagerness: "medium",
           create_response: true,
         },
       },
