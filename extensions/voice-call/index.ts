@@ -787,13 +787,17 @@ function extractTelegramChatId(sessionKey: string): string | null {
 
 /**
  * Extract a Telegram chat ID from a messageTo delivery target.
- * messageTo follows the pattern: "telegram:<type>:<chatId>" where <type> is "direct", "dm", "group".
+ * messageTo can be "telegram:<chatId>" or "telegram:<type>:<chatId>".
  * This is a fallback for when sessionKey doesn't contain the chatId (e.g. dmScope="main").
  */
 function extractChatIdFromMessageTo(messageTo?: string): string | null {
   if (!messageTo) return null;
-  const match = messageTo.match(/^telegram:(?:direct|dm|group):(-?\d+)/);
-  return match ? match[1] : null;
+  // "telegram:direct:123", "telegram:dm:123", "telegram:group:123"
+  const typed = messageTo.match(/^telegram:(?:direct|dm|group):(-?\d+)/);
+  if (typed) return typed[1];
+  // "telegram:123" (short form used by OpenClaw core)
+  const short = messageTo.match(/^telegram:(-?\d+)/);
+  return short ? short[1] : null;
 }
 
 /**
