@@ -341,19 +341,32 @@ const voiceCallPlugin = {
         const telegramChatId =
           extractTelegramChatId(sessionKey) ?? extractChatIdFromMessageTo(call.messageTo);
         if (telegramChatId) {
-          const summary = buildCallSummary(call, transcript, prompt, durationSec);
-          api.logger.info(
-            `[voice-call] Sending proactive Telegram message to ${telegramChatId} for call ${call.callId}`,
-          );
-          api.runtime.channel.telegram
-            .sendMessageTelegram(telegramChatId, summary)
-            .catch((err: unknown) => {
+          // Generate LLM summary (with fallback to template)
+          (async () => {
+            let summary: string;
+            try {
+              summary = await generateLlmSummary(transcript, prompt, durationSec, call);
+            } catch (err) {
               api.logger.warn(
-                `[voice-call] Failed to send proactive Telegram message: ${
+                `[voice-call] LLM summary failed, using template: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
-            });
+              summary = buildCallSummary(call, transcript, prompt, durationSec);
+            }
+            api.logger.info(
+              `[voice-call] Sending proactive Telegram message to ${telegramChatId} for call ${call.callId}`,
+            );
+            api.runtime.channel.telegram
+              .sendMessageTelegram(telegramChatId, summary)
+              .catch((sendErr: unknown) => {
+                api.logger.warn(
+                  `[voice-call] Failed to send proactive Telegram message: ${
+                    sendErr instanceof Error ? sendErr.message : String(sendErr)
+                  }`,
+                );
+              });
+          })();
         }
       });
       return runtime;
@@ -801,9 +814,81 @@ function extractChatIdFromMessageTo(messageTo?: string): string | null {
 }
 
 /**
- * Build a human-readable call summary for direct Telegram delivery.
- * This does NOT use LLM — it's a simple template so it sends instantly.
- * The LLM-powered rich summary still goes through the system event queue.
+ * Generate a concierge-style call summary using LLM (gpt-4o-mini).
+ * Uses the same prompt style as the system event LLM summary, but returns
+ * the result directly instead of enqueuing for next user message.
+ */
+async function generateLlmSummary(
+  transcript: Array<{ speaker: string; text: string }>,
+  prompt: string,
+  durationSec: number,
+  call: CallRecord,
+): Promise<string> {
+  const systemPrompt = [
+    "Ты — профессиональный консьерж-ассистент. Проанализируй транскрипт звонка и напиши клиенту отчёт о результате.",
+    "",
+    "Стиль общения:",
+    "— Деловой, уважительный, тёплый тон. Никаких смайликов и восклицательных знаков через слово.",
+    "— Пиши от первого лица множественного числа («мы уточнили», «мы забронировали»).",
+    "— Будь лаконичен: главное — результат, детали, следующий шаг.",
+    "",
+    "Структура ответа (адаптируй под ситуацию, не все блоки обязательны):",
+    "1. Итог: что удалось/не удалось (одно-два предложения).",
+    "2. Детали: дата, время, количество персон, имя брони, зал/размещение, условия (депозит и т.д.) — всё что удалось выяснить. Оформи списком через «—». Не упоминай пункт, если информации нет.",
+    "3. Следующий шаг: что клиенту нужно сделать дальше.",
+    "",
+    "Завершай фразой: «Остаёмся в вашем распоряжении по любым вопросам.»",
+    "Не выдумывай информацию — используй только то, что есть в транскрипте.",
+  ].join("\n");
+
+  const userMessage = [
+    `Задача звонка: ${prompt}`,
+    `Длительность: ${durationSec} сек`,
+    `Результат: ${call.endReason ?? call.state}`,
+    "",
+    "Транскрипт:",
+    ...transcript.map((t) => {
+      const speaker = t.speaker === "bot" || t.speaker === "assistant" ? "Бот" : "Собеседник";
+      return `${speaker}: ${t.text}`;
+    }),
+  ].join("\n");
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY not set");
+  }
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.3,
+      max_tokens: 500,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  return data.choices?.[0]?.message?.content?.trim() ?? "Звонок завершён.";
+}
+
+/**
+ * Build a human-readable call summary for direct Telegram delivery (fallback).
+ * Simple template used when LLM summary fails or is unavailable.
  */
 function buildCallSummary(
   call: CallRecord,
