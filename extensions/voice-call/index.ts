@@ -11,6 +11,24 @@ import {
 } from "./src/config.js";
 import { createVoiceCallRuntime, type VoiceCallRuntime } from "./src/runtime.js";
 
+/** Structured booking details extracted from call transcript by LLM. */
+export interface BookingDetails {
+  confirmed: boolean;
+  restaurant?: string;
+  date?: string; // YYYY-MM-DD (Moscow)
+  time?: string; // HH:MM (Moscow)
+  durationMinutes?: number;
+  guestName?: string;
+  guestCount?: number;
+  address?: string;
+  notes?: string;
+}
+
+export interface LlmSummaryResponse {
+  summary: string;
+  booking: BookingDetails | null;
+}
+
 const voiceCallConfigSchema = {
   parse(value: unknown): VoiceCallConfig {
     const raw =
@@ -294,58 +312,21 @@ const voiceCallPlugin = {
           transcript,
         };
 
-        // Build the system event prompt for the LLM agent
-        const systemPromptForAgent = [
-          "VOICE_CALL_COMPLETED",
-          [
-            "Ты — профессиональный консьерж-ассистент. Проанализируй транскрипт звонка и напиши пользователю в текущий Telegram-чат отчёт о результате.",
-            "",
-            "Стиль общения:",
-            "— Деловой, уважительный, тёплый тон. Никаких смайликов и восклицательных знаков через слово.",
-            "— Обращайся к пользователю по имени, если оно известно из контекста чата.",
-            "— Пиши от первого лица множественного числа («мы уточнили», «мы забронировали»).",
-            "— Будь лаконичен: главное — результат, детали, следующий шаг.",
-            "",
-            "Структура ответа (адаптируй под ситуацию, не все блоки обязательны):",
-            "1. Краткий итог: что удалось/не удалось.",
-            "2. Детали: дата, время, адрес, зал, количество персон, ограничения — всё что удалось выяснить из разговора.",
-            "3. Если есть дополнительная информация от собеседника (условия, ограничения, альтернативы) — укажи.",
-            "4. Если цель не достигнута — объясни причину и предложи конкретный следующий шаг.",
-            "5. Завершай фразой в духе «Остаёмся в вашем распоряжении по любым вопросам.»",
-            "",
-            "Не выдумывай информацию — используй только то, что есть в транскрипте.",
-          ].join("\n"),
-          JSON.stringify(payload, null, 2),
-        ].join("\n\n");
-
-        // Enqueue the event for the agent (will be picked up on the next turn)
-        try {
-          api.runtime.system.enqueueSystemEvent(systemPromptForAgent, {
-            sessionKey,
-            contextKey: `voice-call:${call.callId}:ended`,
-          });
-        } catch (err) {
-          api.logger.warn(
-            `[voice-call] Failed to enqueue call-ended system event: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-
-        // Proactively send a direct Telegram message with call results.
-        // The system event queue only drains on the NEXT user message, so
-        // without this the user would never see the call result until they
-        // write something. We extract the Telegram chat ID from the
-        // sessionKey (format: "agent:<id>:telegram:<type>:<chatId>...")
-        // and send a formatted summary immediately.
+        // Decide delivery path: proactive Telegram message (preferred) or system event fallback.
         const telegramChatId =
           extractTelegramChatId(sessionKey) ?? extractChatIdFromMessageTo(call.messageTo);
+
         if (telegramChatId) {
-          // Generate LLM summary (with fallback to template)
+          // Send proactive LLM summary with optional calendar link directly to Telegram.
           (async () => {
             let summary: string;
+            let calendarUrl: string | null = null;
             try {
-              summary = await generateLlmSummary(transcript, prompt, durationSec, call);
+              const result = await generateLlmSummary(transcript, prompt, durationSec, call);
+              summary = result.summary;
+              if (result.booking) {
+                calendarUrl = buildGoogleCalendarUrl(result.booking);
+              }
             } catch (err) {
               api.logger.warn(
                 `[voice-call] LLM summary failed, using template: ${
@@ -353,6 +334,9 @@ const voiceCallPlugin = {
                 }`,
               );
               summary = buildCallSummary(call, transcript, prompt, durationSec);
+            }
+            if (calendarUrl) {
+              summary += `\n\n[📅 Добавить в календарь](${calendarUrl})`;
             }
             api.logger.info(
               `[voice-call] Sending proactive Telegram message to ${telegramChatId} for call ${call.callId}`,
@@ -367,6 +351,43 @@ const voiceCallPlugin = {
                 );
               });
           })();
+        } else {
+          // No Telegram chat ID — fall back to system event (agent responds on next user message).
+          const systemPromptForAgent = [
+            "VOICE_CALL_COMPLETED",
+            [
+              "Ты — профессиональный консьерж-ассистент. Проанализируй транскрипт звонка и напиши пользователю в текущий Telegram-чат отчёт о результате.",
+              "",
+              "Стиль общения:",
+              "— Деловой, уважительный, тёплый тон. Никаких смайликов и восклицательных знаков через слово.",
+              "— Обращайся к пользователю по имени, если оно известно из контекста чата.",
+              "— Пиши от первого лица множественного числа («мы уточнили», «мы забронировали»).",
+              "— Будь лаконичен: главное — результат, детали, следующий шаг.",
+              "",
+              "Структура ответа (адаптируй под ситуацию, не все блоки обязательны):",
+              "1. Краткий итог: что удалось/не удалось.",
+              "2. Детали: дата, время, адрес, зал, количество персон, ограничения — всё что удалось выяснить из разговора.",
+              "3. Если есть дополнительная информация от собеседника (условия, ограничения, альтернативы) — укажи.",
+              "4. Если цель не достигнута — объясни причину и предложи конкретный следующий шаг.",
+              "5. Завершай фразой в духе «Остаёмся в вашем распоряжении по любым вопросам.»",
+              "",
+              "Не выдумывай информацию — используй только то, что есть в транскрипте.",
+            ].join("\n"),
+            JSON.stringify(payload, null, 2),
+          ].join("\n\n");
+
+          try {
+            api.runtime.system.enqueueSystemEvent(systemPromptForAgent, {
+              sessionKey,
+              contextKey: `voice-call:${call.callId}:ended`,
+            });
+          } catch (err) {
+            api.logger.warn(
+              `[voice-call] Failed to enqueue call-ended system event: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
       });
       return runtime;
@@ -823,22 +844,44 @@ async function generateLlmSummary(
   prompt: string,
   durationSec: number,
   call: CallRecord,
-): Promise<string> {
+): Promise<LlmSummaryResponse> {
+  // Build reference date string in Moscow timezone for resolving "завтра"/"в четверг"
+  const callDate = new Date(call.startedAt);
+  const isoDate = callDate.toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" }); // YYYY-MM-DD
+  const weekday = callDate.toLocaleDateString("ru-RU", {
+    timeZone: "Europe/Moscow",
+    weekday: "long",
+  });
+  const longDate = callDate.toLocaleDateString("ru-RU", {
+    timeZone: "Europe/Moscow",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
   const systemPrompt = [
-    "Ты — профессиональный консьерж-ассистент. Проанализируй транскрипт звонка и напиши клиенту отчёт о результате.",
+    "Ты — профессиональный консьерж-ассистент. Проанализируй транскрипт звонка и верни результат строго в формате JSON.",
     "",
-    "Стиль общения:",
-    "— Деловой, уважительный, тёплый тон. Никаких смайликов и восклицательных знаков через слово.",
-    "— Пиши от первого лица множественного числа («мы уточнили», «мы забронировали»).",
-    "— Будь лаконичен: главное — результат, детали, следующий шаг.",
+    "Формат ответа (JSON):",
+    "{",
+    '  "summary": "текст отчёта для клиента",',
+    '  "booking": { ... } или null',
+    "}",
     "",
-    "Структура ответа (адаптируй под ситуацию, не все блоки обязательны):",
-    "1. Итог: что удалось/не удалось (одно-два предложения).",
-    "2. Детали: дата, время, количество персон, имя брони, зал/размещение, условия (депозит и т.д.) — всё что удалось выяснить. Оформи списком через «—». Не упоминай пункт, если информации нет.",
-    "3. Следующий шаг: что клиенту нужно сделать дальше.",
+    "Поле summary — текст для клиента:",
+    "— Деловой, уважительный, тёплый тон. Никаких смайликов.",
+    "— От первого лица множественного числа («мы уточнили», «мы забронировали»).",
+    "— Структура: 1) Итог (одно-два предложения), 2) Детали (список через «—»), 3) Следующий шаг.",
+    "— Завершай: «Остаёмся в вашем распоряжении по любым вопросам.»",
+    "— Не выдумывай — только факты из транскрипта.",
     "",
-    "Завершай фразой: «Остаёмся в вашем распоряжении по любым вопросам.»",
-    "Не выдумывай информацию — используй только то, что есть в транскрипте.",
+    "Поле booking — структурированные данные бронирования (или null если бронь не состоялась):",
+    '{ "confirmed": true/false, "restaurant": "название", "date": "YYYY-MM-DD", "time": "HH:MM",',
+    '  "durationMinutes": 90, "guestName": "имя", "guestCount": 2, "address": "адрес", "notes": "примечания" }',
+    "Если бронирование НЕ подтверждено — confirmed: false. Неизвестные поля не включай.",
+    "",
+    `Дата звонка: ${isoDate} (${weekday}, ${longDate}). Таймзона: Europe/Moscow.`,
+    "Если собеседник говорит «завтра» — это следующий день от даты звонка. «Послезавтра» — через два дня.",
   ].join("\n");
 
   const userMessage = [
@@ -871,7 +914,8 @@ async function generateLlmSummary(
         { role: "user", content: userMessage },
       ],
       temperature: 0.3,
-      max_tokens: 500,
+      max_tokens: 700,
+      response_format: { type: "json_object" },
     }),
     signal: AbortSignal.timeout(15000),
   });
@@ -883,7 +927,89 @@ async function generateLlmSummary(
   const data = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
-  return data.choices?.[0]?.message?.content?.trim() ?? "Звонок завершён.";
+  const rawContent =
+    data.choices?.[0]?.message?.content?.trim() ?? '{"summary":"Звонок завершён."}';
+  return parseLlmResponse(rawContent);
+}
+
+/**
+ * Parse the JSON response from LLM into summary text and optional booking details.
+ * Falls back to raw text as summary if JSON parsing fails.
+ */
+export function parseLlmResponse(raw: string): LlmSummaryResponse {
+  try {
+    const parsed = JSON.parse(raw);
+    const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : raw;
+    let booking: BookingDetails | null = null;
+    if (parsed.booking && typeof parsed.booking === "object" && parsed.booking.confirmed === true) {
+      booking = {
+        confirmed: true,
+        restaurant:
+          typeof parsed.booking.restaurant === "string" ? parsed.booking.restaurant : undefined,
+        date: typeof parsed.booking.date === "string" ? parsed.booking.date : undefined,
+        time: typeof parsed.booking.time === "string" ? parsed.booking.time : undefined,
+        durationMinutes:
+          typeof parsed.booking.durationMinutes === "number"
+            ? parsed.booking.durationMinutes
+            : undefined,
+        guestName:
+          typeof parsed.booking.guestName === "string" ? parsed.booking.guestName : undefined,
+        guestCount:
+          typeof parsed.booking.guestCount === "number" ? parsed.booking.guestCount : undefined,
+        address: typeof parsed.booking.address === "string" ? parsed.booking.address : undefined,
+        notes: typeof parsed.booking.notes === "string" ? parsed.booking.notes : undefined,
+      };
+    }
+    return { summary, booking };
+  } catch {
+    return { summary: raw.trim(), booking: null };
+  }
+}
+
+/**
+ * Build a Google Calendar event URL from booking details.
+ * Uses ctz=Europe/Moscow with local dates (no UTC conversion needed).
+ * Returns null if booking is not confirmed or missing date/time.
+ */
+export function buildGoogleCalendarUrl(booking: BookingDetails): string | null {
+  if (!booking.confirmed || !booking.date || !booking.time) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(booking.date)) return null;
+  if (!/^\d{2}:\d{2}$/.test(booking.time)) return null;
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  const [startH, startM] = booking.time.split(":").map(Number);
+  const [startY, startMo, startD] = booking.date.split("-").map(Number);
+  const startLocal = `${startY}${pad(startMo)}${pad(startD)}T${pad(startH)}${pad(startM)}00`;
+
+  // End time via pure minute arithmetic (no Date — no timezone dependency on host)
+  const durationMin = booking.durationMinutes ?? 90;
+  let endTotalMin = startH * 60 + startM + durationMin;
+  let endD = startD;
+  while (endTotalMin >= 24 * 60) {
+    endTotalMin -= 24 * 60;
+    endD += 1;
+  }
+  const endH = Math.floor(endTotalMin / 60);
+  const endMin = endTotalMin % 60;
+  const endLocal = `${startY}${pad(startMo)}${pad(endD)}T${pad(endH)}${pad(endMin)}00`;
+
+  const titleParts: string[] = [];
+  if (booking.restaurant) titleParts.push(booking.restaurant);
+  if (booking.guestName) titleParts.push(`на имя ${booking.guestName}`);
+  if (booking.guestCount) titleParts.push(`${booking.guestCount} чел.`);
+  const title = titleParts.length ? `Бронь: ${titleParts.join(", ")}` : "Бронирование столика";
+
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: title,
+    dates: `${startLocal}/${endLocal}`,
+    ctz: "Europe/Moscow",
+  });
+  if (booking.address) params.set("location", booking.address);
+  else if (booking.restaurant) params.set("location", booking.restaurant);
+
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
 /**
