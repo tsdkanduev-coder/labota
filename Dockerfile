@@ -41,6 +41,10 @@ RUN chown -R node:node /app
 # This reduces the attack surface by preventing container escape via root privileges
 USER node
 
+# Bootstrap workspace files (e.g. SOUL.md) into the persistent disk on
+# first run, then exec the main process.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
 #
