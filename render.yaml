@@ -3,6 +3,7 @@ services:
     name: openclaw
     runtime: docker
     plan: starter
+    dockerCommand: /app/docker-entrypoint.sh node openclaw.mjs gateway --allow-unconfigured
     healthCheckPath: /health
     envVars:
       - key: PORT
