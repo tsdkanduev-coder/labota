@@ -173,6 +173,12 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
   /** Resolves when session.updated is received — used to defer response.create */
   private sessionUpdatedResolve: (() => void) | null = null;
 
+  /** Tracks whether the assistant has produced any audio in the current response. */
+  private hasAssistantSpoken = false;
+  /** Number of times we retried response.create after barge-in cancellation. */
+  private bargeInRetries = 0;
+  private static readonly MAX_BARGE_IN_RETRIES = 2;
+
   private readonly apiKey: string;
   private readonly model: string;
   private readonly mode: RealtimeMode;
@@ -435,10 +441,44 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
       case "session.created":
       case "input_audio_buffer.speech_stopped":
       case "input_audio_buffer.committed":
-      case "response.created":
-      case "response.done":
         console.log(`[Realtime] ${type}`);
         return;
+
+      case "response.created":
+        console.log(`[Realtime] ${type}`);
+        this.hasAssistantSpoken = false;
+        return;
+
+      case "response.done": {
+        const response = this.toRecord(event.response as unknown);
+        const status = response ? this.readString(response, "status") : undefined;
+        console.log(`[Realtime] ${type} status=${status ?? "unknown"}`);
+
+        // If the response was cancelled (barge-in) before the assistant
+        // produced any audio, retry response.create so the bot doesn't
+        // stay silent for the entire call.
+        if (
+          this.mode === "conversation" &&
+          status === "cancelled" &&
+          !this.hasAssistantSpoken &&
+          this.bargeInRetries < OpenAIRealtimeSession.MAX_BARGE_IN_RETRIES
+        ) {
+          this.bargeInRetries++;
+          console.log(
+            `[Realtime] Barge-in cancelled before bot spoke — retrying response.create (attempt ${this.bargeInRetries}/${OpenAIRealtimeSession.MAX_BARGE_IN_RETRIES})`,
+          );
+          // Small delay to let the caller finish their greeting
+          setTimeout(() => {
+            if (!this.closed && this.connected) {
+              this.sendEvent({
+                type: "response.create",
+                response: { modalities: ["text", "audio"] },
+              });
+            }
+          }, 800);
+        }
+        return;
+      }
 
       case "session.updated":
         console.log(`[Realtime] ${type}`);
@@ -484,6 +524,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         if (!delta) {
           return;
         }
+        this.hasAssistantSpoken = true;
         try {
           const audio = Buffer.from(delta, "base64");
           if (audio.length > 0) {
