@@ -364,34 +364,13 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         return;
       }
 
-      // One-time per-response instruction for the first turn only.
-      // Forces a natural opening (greet + state goal) without polluting
-      // the persistent session instructions.
-      const forceOpening = this.conversation?.forceOpening !== false;
-      const task = this.conversation?.task;
-      const firstTurnInstruction = forceOpening
-        ? task
-          ? [
-              `Задача звонка: ${task}.`,
-              `Начни разговор как живой человек — поздоровайся и естественно опиши, зачем звонишь.`,
-              `Пример: «Здравствуйте, хотел бы столик забронировать на завтра на 19:00 на двоих. Подскажите, будут ли свободные места?»`,
-              `НЕ зачитывай задачу дословно. Перефразируй своими словами, как сказал бы человек по телефону.`,
-              `Одна фраза, потом замолчи и жди ответа.`,
-            ].join(" ")
-          : "Поздоровайся и сразу озвучь цель звонка одной фразой. Потом замолчи и жди ответа."
-        : undefined;
-
-      console.log(
-        `[Realtime] session.updated confirmed, triggering first response` +
-          (firstTurnInstruction ? " (with forced opening)" : ""),
-      );
+      // Session instructions already contain the task, examples, and tone.
+      // No per-response override needed — let the model speak from session prompt.
+      console.log(`[Realtime] session.updated confirmed, triggering first response`);
 
       this.sendEvent({
         type: "response.create",
-        response: {
-          modalities: ["text", "audio"],
-          ...(firstTurnInstruction ? { instructions: firstTurnInstruction } : {}),
-        },
+        response: { modalities: ["text", "audio"] },
       });
     });
   }
