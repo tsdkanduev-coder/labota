@@ -322,10 +322,11 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
         output_audio_format: "g711_ulaw",
         input_audio_transcription: {
           model: "whisper-1",
+          ...(this.conversation?.language && { language: this.conversation.language }),
         },
         turn_detection: {
           type: "semantic_vad",
-          eagerness: "medium",
+          eagerness: "high",
           create_response: true,
         },
       },
