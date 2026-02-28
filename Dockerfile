@@ -18,6 +18,10 @@ RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY ui/package.json ./ui/package.json
+# Copy workspace member package.json files so pnpm installs their unique deps.
+# Extensions that only use root-hoisted deps work without this, but packages
+# with their own dependencies (e.g. nabu-calendar → luxon) need it.
+COPY extensions/nabu-calendar/package.json ./extensions/nabu-calendar/package.json
 COPY patches ./patches
 COPY scripts ./scripts
 
