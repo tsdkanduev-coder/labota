@@ -48,6 +48,18 @@ describe("toISO", () => {
     const iso = toISO(date, "America/New_York", false);
     expect(iso).toContain("2026-03-01T05:00:00"); // UTC-5
   });
+
+  it("normalizes Etc/UTC dates to fallbackTz (D10: Google Calendar Z-suffix fix)", () => {
+    // Google Calendar exports DTSTART:20260228T120000Z → node-ical sets tz = "Etc/UTC"
+    // The event is at 15:00 Moscow time (12:00 UTC).
+    // Bug: without .setZone(fallbackTz), the ISO contained T12:00:00+00:00
+    //       which downstream (LLM, formatTime) displayed as 12:00 instead of 15:00.
+    const date = new Date("2026-02-28T12:00:00Z") as Date & { tz?: string };
+    date.tz = "Etc/UTC";
+    const iso = toISO(date, TZ, false);
+    expect(iso).toContain("2026-02-28T15:00:00"); // Must show Moscow local time
+    expect(iso).toContain("+03:00"); // Must carry Moscow offset
+  });
 });
 
 // ─── extractAttendees ───────────────────────────────────────────

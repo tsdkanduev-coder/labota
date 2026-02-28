@@ -55,10 +55,11 @@ export function expandRecurring(
     // Correct timezone: rrule.between() returns UTC Date objects where
     // UTC components represent LOCAL time in the event's timezone
     const corrected = correctRruleDate(date, event, timezone);
-    const dateKey = corrected.toISODate()!;
-
-    // Check EXDATE — compare full ISO datetime for timed events (Codex P1 fix)
-    const exdateCheckKey = isAllDay ? dateKey : corrected.toISO()!;
+    // D10: always compute dateKey in userTz so it matches recurrenceMap keys
+    // (which use dates in the user's local timezone, not UTC)
+    const correctedInUserTz = corrected.setZone(timezone);
+    const dateKey = correctedInUserTz.toISODate()!;
+    const exdateCheckKey = isAllDay ? dateKey : correctedInUserTz.toISO()!;
     if (exdateSet.has(exdateCheckKey)) continue;
 
     // Check if this instance has been modified
@@ -70,8 +71,11 @@ export function expandRecurring(
     }
 
     // Regular instance
-    const startDt = corrected;
-    const endDt = corrected.plus({ milliseconds: eventDurationMs });
+    // D10 fix: always express ISO in userTz so downstream (LLM, formatTime)
+    // reads the correct local time. Without setZone, Google Calendar events
+    // (Z-suffix → Etc/UTC) would show UTC hours instead of Moscow hours.
+    const startDt = corrected.setZone(timezone);
+    const endDt = corrected.plus({ milliseconds: eventDurationMs }).setZone(timezone);
 
     instances.push({
       uid: event.uid,
@@ -84,7 +88,7 @@ export function expandRecurring(
       transparency: mapTransparency(event.transparency),
       attendees: extractAttendees(event.attendee),
       organizer: extractOrganizer(event.organizer),
-      recurrenceId: corrected.toISO()!,
+      recurrenceId: startDt.toISO()!,
       isRecurring: true,
       allDay: isAllDay,
     });
@@ -149,7 +153,7 @@ function buildExdateSet(exdate: unknown, timezone: string, isAllDay: boolean): S
     if (entry instanceof Date) {
       const dt = DateTime.fromJSDate(entry, {
         zone: (entry as Date & { tz?: string }).tz || timezone,
-      });
+      }).setZone(timezone); // D10: normalize to userTz for consistent comparison
       if (isAllDay) {
         set.add(dt.toISODate()!);
       } else {

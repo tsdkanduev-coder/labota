@@ -104,7 +104,9 @@ function detectChanges(prev: CalendarEvent, curr: CalendarEvent): string[] {
  */
 function formatTime(v: unknown): string {
   if (typeof v !== "string" || !v) return "";
-  const dt = DateTime.fromISO(v);
+  // D10: use setZone to preserve the offset embedded in the ISO string,
+  // so HH:mm reflects the user's local time (not the server's TZ).
+  const dt = DateTime.fromISO(v, { setZone: true });
   if (!dt.isValid) return String(v);
   return dt.toFormat("HH:mm");
 }

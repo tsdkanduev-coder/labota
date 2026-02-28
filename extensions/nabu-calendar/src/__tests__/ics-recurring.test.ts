@@ -21,10 +21,11 @@ function makeVEvent(overrides: Partial<VEvent> & { uid: string }): VEvent {
 }
 
 /** Create a mock rrule that returns given dates */
-function mockRrule(dates: Date[], tzid?: string) {
+function mockRrule(dates: Date[], tzid?: string | null) {
   return {
     between: (_start: Date, _end: Date, _inc: boolean) => dates,
-    origOptions: { tzid: tzid || TZ },
+    // Pass null to simulate Google Calendar Z-suffix (no tzid in rrule origOptions)
+    origOptions: { tzid: tzid === null ? undefined : (tzid ?? TZ) },
   };
 }
 
@@ -330,5 +331,38 @@ describe("expandRecurring", () => {
     const result = expandRecurring(event, WINDOW_START, WINDOW_END, TZ);
     expect(result[0]!.status).toBe("tentative");
     expect(result[0]!.transparency).toBe("transparent");
+  });
+
+  it("outputs ISO in userTz for Google Calendar Z-suffix events (D10)", () => {
+    // Google Calendar: DTSTART:20260301T070000Z (= 10:00 Moscow)
+    // node-ical: date.tz = "Etc/UTC", JS Date = UTC 07:00
+    // rrule.between() returns Date with getUTCHours()=7 (UTC components = event's original UTC time)
+    // But wait — rrule sees the DTSTART as "07:00 in the rrule's tzid zone"
+    // For Z-suffix events, rrule origOptions.tzid is typically undefined,
+    // and event.start.tz = "Etc/UTC". So correctRruleDate interprets
+    // getUTCHours()=7 as "07:00 in Etc/UTC" → moment = 07:00 UTC = 10:00 Moscow.
+    // The key D10 fix: .setZone(timezone) ensures output ISO shows +03:00.
+    const startDate = new Date("2026-03-01T07:00:00Z") as Date & { tz?: string };
+    startDate.tz = "Etc/UTC"; // Google Calendar Z-suffix behavior
+
+    const dates = [new Date(Date.UTC(2026, 2, 1, 7, 0))]; // rrule returns UTC components
+
+    const event = makeVEvent({
+      uid: "google-utc-recurring",
+      summary: "Google Event",
+      start: startDate,
+      end: new Date("2026-03-01T08:00:00Z"),
+      datetype: "date-time",
+      rrule: mockRrule(dates, null) as unknown as VEvent["rrule"],
+    });
+
+    const result = expandRecurring(event, WINDOW_START, WINDOW_END, TZ);
+    expect(result.length).toBe(1);
+
+    // ISO must express time in Moscow timezone
+    expect(result[0]!.start).toContain("T10:00:00");
+    expect(result[0]!.start).toContain("+03:00");
+    expect(result[0]!.end).toContain("T11:00:00");
+    expect(result[0]!.end).toContain("+03:00");
   });
 });

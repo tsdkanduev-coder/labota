@@ -22,7 +22,12 @@ export function toISO(date: Date & { tz?: string }, fallbackTz: string, isAllDay
     ).toISO()!;
   }
   const tz = date.tz || fallbackTz;
-  return DateTime.fromJSDate(date, { zone: tz }).toISO()!;
+  // D10 fix: always output ISO in the user's fallbackTz.
+  // node-ical sets date.tz = "Etc/UTC" for Z-suffix DTSTART values.
+  // Without .setZone(fallbackTz), the ISO string would contain UTC local
+  // time (e.g., T12:00:00+00:00 instead of T15:00:00+03:00 for Moscow),
+  // causing downstream consumers (LLM, formatTime) to show wrong hours.
+  return DateTime.fromJSDate(date, { zone: tz }).setZone(fallbackTz).toISO()!;
 }
 
 // ─── Attendee Extraction ────────────────────────────────────────
