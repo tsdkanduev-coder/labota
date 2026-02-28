@@ -98,9 +98,12 @@ const nabuCalendarPlugin = {
     let ledger: NabuLedger | null = null;
 
     const getStateDir = (): string => {
-      if (resolvedStateDir) return resolvedStateDir;
-      // Fallback only if service hasn't started yet (shouldn't happen in prod)
-      return process.env.OPENCLAW_STATE_DIR || `${process.env.HOME || "/tmp"}/.openclaw`;
+      if (!resolvedStateDir) {
+        throw new Error(
+          "[nabu-calendar] stateDir not initialized — service.start() must run before tool calls",
+        );
+      }
+      return resolvedStateDir;
     };
 
     const ensureStore = (): NabuStore => {
