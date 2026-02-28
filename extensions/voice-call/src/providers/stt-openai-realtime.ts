@@ -85,6 +85,8 @@ export interface RealtimeSTTSession {
   onAssistantTranscript(callback: (transcript: string) => void): void;
   /** Set callback for assistant audio chunks (conversation mode) */
   onAssistantAudio(callback: (audio: Buffer) => void): void;
+  /** Set callback for session close (e.g. WebSocket lost in conversation mode) */
+  onClose(callback: () => void): void;
   /** Check whether session is in conversation mode */
   isConversationMode(): boolean;
   /** Close the session */
@@ -169,6 +171,7 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
   private onAssistantTranscriptCallback: ((transcript: string) => void) | null = null;
   private onAssistantPartialCallback: ((partial: string) => void) | null = null;
   private onAssistantAudioCallback: ((audio: Buffer) => void) | null = null;
+  private onCloseCallback: (() => void) | null = null;
 
   private readonly apiKey: string;
   private readonly model: string;
@@ -534,6 +537,10 @@ class OpenAIRealtimeSession implements RealtimeSTTSession {
 
   onAssistantAudio(callback: (audio: Buffer) => void): void {
     this.onAssistantAudioCallback = callback;
+  }
+
+  onClose(callback: () => void): void {
+    this.onCloseCallback = callback;
   }
 
   async waitForTranscript(timeoutMs = 30000): Promise<string> {
