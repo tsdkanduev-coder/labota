@@ -1,5 +1,6 @@
 {
   "id": "nabu-calendar",
+  "skills": ["./skills"],
   "uiHints": {
     "enabled": {
       "label": "Enable Nabu Calendar",
