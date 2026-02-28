@@ -43,6 +43,7 @@ const NabuCalendarToolSchema = Type.Object({
       Type.Literal("fetch"),
       Type.Literal("find_slots"),
       Type.Literal("handle_callback"),
+      Type.Literal("record_incident"),
       Type.Literal("status"),
       Type.Literal("disable"),
     ],
@@ -60,6 +61,15 @@ const NabuCalendarToolSchema = Type.Object({
   // find_slots
   durationMin: Type.Optional(
     Type.Number({ description: "Desired slot duration in minutes (for find_slots)" }),
+  ),
+  // record_incident
+  trigger: Type.Optional(
+    Type.String({
+      description: "What triggered this incident, e.g. 'periodic-sync-diff' (for record_incident)",
+    }),
+  ),
+  textSnippet: Type.Optional(
+    Type.String({ description: "Short text of the proactive message sent (for record_incident)" }),
   ),
   // handle_callback
   callbackAction: Type.Optional(
@@ -136,7 +146,7 @@ const nabuCalendarPlugin = {
         name: "nabu_calendar",
         label: "Nabu Calendar",
         description:
-          "Personal calendar assistant. Actions: setup (connect .ics feed), fetch (get events), find_slots (find free time), handle_callback (process button taps), status, disable.",
+          "Personal calendar assistant. Actions: setup (connect .ics feed), fetch (get events), find_slots (find free time), handle_callback (process button taps), record_incident (log a proactive message for dedup/cooldown), status, disable.",
         parameters: NabuCalendarToolSchema,
 
         async execute(_toolCallId, params) {
@@ -150,6 +160,8 @@ const nabuCalendarPlugin = {
                 return await handleFindSlots(params, chatId);
               case "handle_callback":
                 return await handleCallback(params, chatId);
+              case "record_incident":
+                return await handleRecordIncident(params, chatId);
               case "status":
                 return await handleStatus(chatId);
               case "disable":
@@ -234,6 +246,12 @@ const nabuCalendarPlugin = {
       const timezone = params.timezone?.trim() || config.timezone;
       const s = ensureStore();
 
+      // Reset previous state for this chat (clean slate on reconnect)
+      const f = ensureFetcher();
+      f.reset(chatId);
+      const l = ensureLedger();
+      l.cleanup(chatId, 0); // Remove all existing incidents
+
       // Save config first (always succeeds) — D2: setup doesn't fail on fetch
       const userConfig = {
         chatId,
@@ -293,6 +311,7 @@ const nabuCalendarPlugin = {
               `Morning check for chat ${chatId}.`,
               `Call nabu_calendar with action="fetch" and date="today".`,
               `Analyze the day using the proactive model from your SKILL.md.`,
+              `Check the "ledger" field: if ledger.inCooldown is true → reply "NO_REPLY".`,
               ``,
               `Message the user ONLY if at least one of these is true:`,
               `- There are VIP meetings today (CEO, C-level, important client, investor, board)`,
@@ -300,7 +319,8 @@ const nabuCalendarPlugin = {
               `- The day is overloaded (8+ meetings) or poorly structured (routine blocks prep time for key meetings)`,
               ``,
               `If you message — be brief (2-4 lines). Mention only what matters, propose concrete actions.`,
-              `If nothing important — reply "SILENT". A normal day with normal meetings = SILENT.`,
+              `AFTER sending a message, call nabu_calendar with action="record_incident", incidentId="morning-check-<today's date>", trigger="morning-check", textSnippet=<your message>.`,
+              `If nothing important — reply "NO_REPLY". A normal day with normal meetings = NO_REPLY.`,
               `Use the user's language (Russian if events are in Russian). Times in HH:MM, timezone: ${timezone}.`,
             ].join("\n"),
             delivery: deliveryTarget,
@@ -316,6 +336,7 @@ const nabuCalendarPlugin = {
               `Evening lookahead for chat ${chatId}.`,
               `Call nabu_calendar with action="fetch" and date="tomorrow".`,
               `Analyze tomorrow using the proactive model from your SKILL.md.`,
+              `Check the "ledger" field: if ledger.inCooldown is true → reply "NO_REPLY".`,
               ``,
               `Message the user ONLY if at least one of these is true:`,
               `- VIP meetings tomorrow (CEO, C-level, important client, investor, board)`,
@@ -324,7 +345,8 @@ const nabuCalendarPlugin = {
               `- First meeting is unusually early (before 9:00) — warn so they plan their morning`,
               ``,
               `If you message — be brief (2-4 lines). Focus on what needs attention or preparation.`,
-              `If nothing notable — reply "SILENT". A normal day = SILENT.`,
+              `AFTER sending a message, call nabu_calendar with action="record_incident", incidentId="evening-lookahead-<tomorrow's date>", trigger="evening-lookahead", textSnippet=<your message>.`,
+              `If nothing notable — reply "NO_REPLY". A normal day = NO_REPLY.`,
               `Use the user's language. Times in HH:MM, timezone: ${timezone}.`,
             ].join("\n"),
             delivery: deliveryTarget,
@@ -335,14 +357,19 @@ const nabuCalendarPlugin = {
             message: [
               `Periodic calendar sync for chat ${chatId}.`,
               `Call nabu_calendar with action="fetch" and date="today".`,
-              `Check the "diff" field in the response. Apply the proactive model from your SKILL.md:`,
+              `Check the "diff" field AND "ledger" field in the response. Apply the proactive model from your SKILL.md:`,
               ``,
-              `- If diff is EMPTY or has NO added/modified/removed items → reply "SILENT".`,
-              `- If diff has changes but they are minor (routine sync shifted 15 min, description edit) → reply "SILENT".`,
+              `- If diff is EMPTY or has NO added/modified/removed items → reply "NO_REPLY".`,
+              `- If diff has changes but they are minor (routine sync shifted 15 min, description edit) → reply "NO_REPLY".`,
+              `- If ledger.inCooldown is true → reply "NO_REPLY" (user recently interacted).`,
+              `- If a change's event UID is in ledger.recentIncidentIds → reply "NO_REPLY" (already reported).`,
               `- If diff has IMPORTANT changes (VIP meeting added/cancelled/moved, new conflict with key event, significant schedule disruption) → send a SHORT alert (1-2 sentences).`,
               ``,
+              `AFTER sending an alert, call nabu_calendar with action="record_incident", incidentId=<event UID or unique key>, trigger="periodic-sync", textSnippet=<your message text>.`,
+              `This prevents duplicate alerts on the next sync.`,
+              ``,
               `Examples of when to alert: "Petrov (CEO) added a 1:1 tomorrow at 9:00" or "Board review moved from 14:00 to 16:00 — conflicts with your flight".`,
-              `Examples of SILENT: routine standup moved 15 min, team sync description updated, lunch block shifted.`,
+              `Examples of NO_REPLY: routine standup moved 15 min, team sync description updated, lunch block shifted.`,
               ``,
               `IMPORTANT: Never send status updates about sync process. Never explain what you're doing. Only alert on tier 1 changes.`,
               `Use the user's language. Times in HH:MM, timezone: ${timezone}.`,
@@ -355,7 +382,7 @@ const nabuCalendarPlugin = {
             message: [
               `Daily memory consolidation for chat ${chatId}.`,
               `This is an internal housekeeping task. Do NOT message the user.`,
-              `Reply with exactly "SILENT" after completing.`,
+              `Reply with exactly "NO_REPLY" after completing.`,
             ].join("\n"),
             delivery: deliveryTarget,
           }),
@@ -399,6 +426,12 @@ const nabuCalendarPlugin = {
         events = result.events;
       }
 
+      // Ledger context for proactive dedup/cooldown
+      const l = ensureLedger();
+      const todayCount = l.countToday(chatId);
+      const inCooldown = l.isInCooldown(chatId);
+      const recentIds = l.getTodayMessages(chatId).map((r) => r.id);
+
       return textResult({
         events,
         count: events.length,
@@ -406,6 +439,11 @@ const nabuCalendarPlugin = {
         stale: result.stale,
         source: result.source,
         ...(result.diff && { diff: result.diff }),
+        ledger: {
+          proactiveMessagesToday: todayCount,
+          inCooldown,
+          recentIncidentIds: recentIds,
+        },
       });
     }
 
@@ -500,7 +538,7 @@ const nabuCalendarPlugin = {
         }
 
         case "plan": {
-          // Complex callback — agent will use LLM reasoning + calendar_fetch.
+          // Complex callback — agent will use LLM reasoning + nabu_calendar fetch.
           // Tool just returns context, LLM composes the plan.
           if (!params.incidentId) {
             return textResult({ error: "incidentId required for plan" });
@@ -518,7 +556,7 @@ const nabuCalendarPlugin = {
               reaction: m.reaction,
             })),
             instruction:
-              "Use calendar_fetch to get events, then compose a schedule optimization plan based on the context above.",
+              'Use nabu_calendar with action="fetch" and date="today" to get events, then compose a schedule optimization plan based on the context above.',
           });
         }
 
@@ -543,6 +581,55 @@ const nabuCalendarPlugin = {
             error: `Unknown callback action: ${params.callbackAction}`,
           });
       }
+    }
+
+    async function handleRecordIncident(
+      params: { incidentId?: string; trigger?: string; textSnippet?: string },
+      chatId: number | null,
+    ) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+      if (!params.incidentId || !params.trigger || !params.textSnippet) {
+        return textResult({
+          error: "incidentId, trigger, and textSnippet are required for record_incident",
+        });
+      }
+
+      const l = ensureLedger();
+
+      // Dedup check
+      if (l.exists(chatId, params.incidentId)) {
+        return textResult({
+          ok: false,
+          reason: "duplicate",
+          message: "This incident was already recorded. Do not send the message.",
+        });
+      }
+
+      // Cooldown check
+      if (l.isInCooldown(chatId)) {
+        return textResult({
+          ok: false,
+          reason: "cooldown",
+          message:
+            "User recently interacted with a proactive message. Wait before sending another.",
+        });
+      }
+
+      // Record it
+      const record = l.record({
+        chatId,
+        incidentId: params.incidentId,
+        trigger: params.trigger,
+        textSnippet: params.textSnippet,
+      });
+
+      return textResult({
+        ok: true,
+        recorded: record.id,
+        proactiveMessagesToday: l.countToday(chatId),
+      });
     }
 
     async function handleStatus(chatId: number | null) {
@@ -582,12 +669,31 @@ const nabuCalendarPlugin = {
       const s = ensureStore();
       const deleted = s.delete(chatId);
 
+      if (deleted) {
+        // Clean fetch cache and ledger
+        const f = ensureFetcher();
+        f.reset(chatId);
+        const l = ensureLedger();
+        l.cleanup(chatId, 0);
+      }
+
+      const cronJobNames = [
+        `nabu-brief-morning-${chatId}`,
+        `nabu-evening-lookahead-${chatId}`,
+        `nabu-sync-periodic-${chatId}`,
+        `nabu-memory-consolidation-${chatId}`,
+      ];
+
       return textResult({
         ok: true,
         wasConnected: deleted,
         message: deleted
-          ? "Calendar disconnected. Cron jobs should be removed."
+          ? "Calendar disconnected. Remove all cron jobs listed below."
           : "No calendar was connected.",
+        cronJobsToRemove: deleted ? cronJobNames : [],
+        instruction: deleted
+          ? `Remove these cron jobs using cron({ action: "remove", name: "<name>" }) for each: ${cronJobNames.join(", ")}`
+          : undefined,
       });
     }
   },
