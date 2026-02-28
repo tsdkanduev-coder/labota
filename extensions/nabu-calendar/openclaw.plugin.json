@@ -24,12 +24,6 @@
       "label": "Write access",
       "help": "Allow Nabu to create/move/cancel events (experimental)",
       "advanced": true
-    },
-    "model": {
-      "label": "LLM Model",
-      "help": "Model for proactive messages",
-      "advanced": true,
-      "placeholder": "claude-sonnet-4-20250514"
     }
   },
   "configSchema": {
@@ -41,7 +35,6 @@
       "morningBriefHour": { "type": "number" },
       "eveningLookaheadHour": { "type": "number" },
       "writeEnabled": { "type": "boolean" },
-      "model": { "type": "string" },
       "syncIntervalMs": { "type": "number" },
       "maxProactivePerDay": { "type": "number" }
     }

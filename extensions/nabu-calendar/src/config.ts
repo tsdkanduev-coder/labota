@@ -10,9 +10,8 @@ export const NabuCalendarConfigSchema = z.object({
   syncIntervalMs: z.number().int().positive().default(900_000), // 15 min
   maxProactivePerDay: z.number().int().positive().default(5),
   writeEnabled: z.boolean().default(false),
-  model: z.string().default("claude-sonnet-4-20250514"),
-  llmTimeoutMs: z.number().int().positive().default(30_000),
-  llmRetryDelays: z.array(z.number()).default([5_000, 15_000, 30_000]),
+  // Note: no model/llmTimeout/llmRetryDelays — Nabu doesn't make direct LLM calls.
+  // All LLM interaction goes through OpenClaw cron → isolated session → the bot's configured model.
   // ICS URL is stored per-user in store, not in plugin config
 });
 export type NabuCalendarConfig = z.infer<typeof NabuCalendarConfigSchema>;
@@ -38,9 +37,6 @@ export function resolveConfig(config: NabuCalendarConfig): NabuCalendarConfig {
   if (process.env.NABU_TIMEZONE) {
     resolved.timezone = process.env.NABU_TIMEZONE;
   }
-  if (process.env.NABU_MODEL) {
-    resolved.model = process.env.NABU_MODEL;
-  }
 
   return resolved;
 }
@@ -57,10 +53,8 @@ export function validateConfig(config: NabuCalendarConfig): {
     return { valid: true, errors: [] };
   }
 
-  // Check ANTHROPIC_API_KEY for proactive LLM calls
-  if (!process.env.ANTHROPIC_API_KEY) {
-    errors.push("ANTHROPIC_API_KEY environment variable is required for proactive calendar briefs");
-  }
+  // No API key check needed — Nabu doesn't make direct LLM calls.
+  // All LLM interaction goes through OpenClaw's configured model (OpenAI, etc.)
 
   return { valid: errors.length === 0, errors };
 }
