@@ -1,0 +1,56 @@
+{
+  "id": "nabu-calendar",
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Nabu Calendar",
+      "help": "Enable the Nabu calendar assistant"
+    },
+    "icsUrl": {
+      "label": "Calendar .ics URL",
+      "help": "Secret URL for your calendar's .ics feed (e.g., from Google Calendar)",
+      "sensitive": true,
+      "placeholder": "https://calendar.google.com/calendar/ical/..."
+    },
+    "timezone": {
+      "label": "Timezone",
+      "help": "Your timezone (e.g., Europe/Moscow)",
+      "placeholder": "Europe/Moscow"
+    },
+    "morningBriefHour": {
+      "label": "Morning brief hour",
+      "help": "Hour to send morning brief (0-23)",
+      "placeholder": "8"
+    },
+    "eveningLookaheadHour": {
+      "label": "Evening lookahead hour",
+      "help": "Hour to send evening preview (0-23)",
+      "placeholder": "20"
+    },
+    "writeEnabled": {
+      "label": "Write access",
+      "help": "Allow Nabu to create/move/cancel events (experimental)",
+      "advanced": true
+    },
+    "model": {
+      "label": "LLM Model",
+      "help": "Model for proactive messages",
+      "advanced": true,
+      "placeholder": "claude-sonnet-4-20250514"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "icsUrl": { "type": "string" },
+      "timezone": { "type": "string" },
+      "morningBriefHour": { "type": "number" },
+      "eveningLookaheadHour": { "type": "number" },
+      "writeEnabled": { "type": "boolean" },
+      "model": { "type": "string" },
+      "syncIntervalMs": { "type": "number" },
+      "maxProactivePerDay": { "type": "number" }
+    }
+  }
+}
