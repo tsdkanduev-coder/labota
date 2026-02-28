@@ -1,6 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Type } from "@sinclair/typebox";
+import { DateTime } from "luxon";
+import type { CalendarEvent, CalendarSnapshot } from "./src/types.js";
 import { nabuCalendarConfigParser, resolveConfig, validateConfig } from "./src/config.js";
+import { IcsFetcher } from "./src/ics-fetcher.js";
+import { filterByDate, filterByRange, findFreeSlots } from "./src/ics-helpers.js";
 import { NabuLedger } from "./src/ledger.js";
 import { NabuStore } from "./src/store.js";
 
@@ -96,6 +100,7 @@ const nabuCalendarPlugin = {
     let resolvedStateDir: string | null = null;
     let store: NabuStore | null = null;
     let ledger: NabuLedger | null = null;
+    let fetcher: IcsFetcher | null = null;
 
     const getStateDir = (): string => {
       if (!resolvedStateDir) {
@@ -114,6 +119,11 @@ const nabuCalendarPlugin = {
     const ensureLedger = (): NabuLedger => {
       if (!ledger) ledger = new NabuLedger(getStateDir());
       return ledger;
+    };
+
+    const ensureFetcher = (): IcsFetcher => {
+      if (!fetcher) fetcher = new IcsFetcher(getStateDir());
+      return fetcher;
     };
 
     // ─── Register Tool ─────────────────────────────────────────
@@ -176,12 +186,14 @@ const nabuCalendarPlugin = {
         api.logger.info("[nabu-calendar] Service started");
         ensureStore();
         ensureLedger();
+        ensureFetcher();
       },
 
       stop: async () => {
         api.logger.info("[nabu-calendar] Service stopped");
         store = null;
         ledger = null;
+        fetcher = null;
       },
     });
 
@@ -222,7 +234,7 @@ const nabuCalendarPlugin = {
       const timezone = params.timezone?.trim() || config.timezone;
       const s = ensureStore();
 
-      // TODO: implement actual ICS fetch in ics-fetcher.ts (Day 2-3)
+      // Save config first (always succeeds) — D2: setup doesn't fail on fetch
       const userConfig = {
         chatId,
         icsUrl,
@@ -237,14 +249,42 @@ const nabuCalendarPlugin = {
       s.set(chatId, userConfig);
       api.logger.info(`[nabu-calendar] Setup complete for chat ${chatId}, tz=${timezone}`);
 
+      // Attempt initial fetch with timeout — D2: resilient, doesn't block setup
+      let syncResult: {
+        eventsFound: number;
+        calendarSnapshot: CalendarSnapshot | null;
+        syncStatus: string;
+      };
+      try {
+        const f = ensureFetcher();
+        const result = await f.fetch(chatId, icsUrl, timezone, true);
+        const snapshot = generateSnapshot(result.events, timezone);
+        syncResult = {
+          eventsFound: result.events.length,
+          calendarSnapshot: snapshot,
+          syncStatus: result.stale ? "stale" : "ok",
+        };
+        api.logger.info(
+          `[nabu-calendar] Initial fetch: ${result.events.length} events, source=${result.source}`,
+        );
+      } catch (err) {
+        api.logger.warn(
+          `[nabu-calendar] Initial fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        syncResult = {
+          eventsFound: 0,
+          calendarSnapshot: null,
+          syncStatus: "pending",
+        };
+      }
+
       // Resolve delivery target for cron jobs
       const deliveryTarget = messageTo ? parseDeliveryTarget(messageTo) : undefined;
 
       // P1 fix: return proper OpenClaw cron job schema
       return textResult({
         ok: true,
-        eventsFound: 0, // TODO: actual count after ICS fetch
-        calendarSnapshot: null, // TODO: actual analysis after ICS fetch
+        ...syncResult,
         cronJobs: [
           buildCronJob({
             name: `nabu-brief-morning-${chatId}`,
@@ -276,7 +316,9 @@ const nabuCalendarPlugin = {
           }),
         ],
         instruction:
-          "Create all 4 cron jobs listed above using the cron tool. Each item is a complete job object — pass it as the `job` parameter to cron({ action: 'add', job: <item> }).",
+          syncResult.syncStatus === "pending"
+            ? "Calendar connected but initial sync failed. Events will appear on next periodic sync. Create all 4 cron jobs listed above using the cron tool."
+            : "Create all 4 cron jobs listed above using the cron tool. Each item is a complete job object — pass it as the `job` parameter to cron({ action: 'add', job: <item> }).",
       });
     }
 
@@ -296,10 +338,29 @@ const nabuCalendarPlugin = {
         });
       }
 
-      // TODO: implement actual ICS fetch + parse (Day 2-3)
+      const f = ensureFetcher();
+      const result = await f.fetch(chatId, userConfig.icsUrl, userConfig.timezone);
+
+      // Update lastFetchAt in store
+      s.update(chatId, { lastFetchAt: result.fetchedAt });
+
+      // Filter by date/range if specified
+      let events: CalendarEvent[];
+      if (params.date) {
+        events = filterByDate(result.events, params.date, userConfig.timezone);
+      } else if (params.from || params.to) {
+        events = filterByRange(result.events, params.from, params.to, userConfig.timezone);
+      } else {
+        events = result.events;
+      }
+
       return textResult({
-        events: [],
-        note: "ICS fetcher not yet implemented. Connect .ics feed first.",
+        events,
+        count: events.length,
+        fetchedAt: result.fetchedAt,
+        stale: result.stale,
+        source: result.source,
+        ...(result.diff && { diff: result.diff }),
       });
     }
 
@@ -317,11 +378,29 @@ const nabuCalendarPlugin = {
         return textResult({ error: "Calendar not set up." });
       }
 
-      // TODO: implement slot finding (Day 3-4)
+      const f = ensureFetcher();
+      const result = await f.fetch(chatId, userConfig.icsUrl, userConfig.timezone);
+
+      const targetDate = params.date || "today";
+      const dayEvents = filterByDate(result.events, targetDate, userConfig.timezone);
+
+      const slots = findFreeSlots(
+        dayEvents,
+        9, // workday start
+        18, // workday end
+        params.durationMin || 30,
+        targetDate,
+        userConfig.timezone,
+      );
+
       return textResult({
-        slots: [],
-        busyBlocks: [],
-        note: "Slot finder not yet implemented.",
+        date: targetDate,
+        slots,
+        busyBlocks: dayEvents
+          .filter((e) => e.status !== "cancelled" && e.transparency !== "transparent" && !e.allDay)
+          .map((e) => ({ summary: e.summary, start: e.start, end: e.end })),
+        stale: result.stale,
+        source: result.source,
       });
     }
 
@@ -468,6 +547,84 @@ const nabuCalendarPlugin = {
     }
   },
 };
+
+// ─── Calendar Snapshot ────────────────────────────────────────────
+
+/**
+ * Generate a deterministic snapshot of calendar patterns for setup response.
+ * No LLM needed — pure data analysis.
+ */
+function generateSnapshot(events: CalendarEvent[], timezone: string): CalendarSnapshot {
+  const now = DateTime.now().setZone(timezone);
+  const weekAgo = now.minus({ weeks: 4 });
+
+  // Filter to recent events for pattern analysis
+  const recentEvents = events.filter((e) => {
+    const start = DateTime.fromISO(e.start, { zone: timezone });
+    return start >= weekAgo && start <= now.plus({ weeks: 4 });
+  });
+
+  // Find recurring meetings
+  const recurringMap = new Map<
+    string,
+    { summary: string; dayOfWeek: string; time: string; attendees: string[] }
+  >();
+  for (const e of recentEvents) {
+    if (!e.isRecurring || e.allDay) continue;
+    const key = `${e.summary}`;
+    if (recurringMap.has(key)) continue;
+    const dt = DateTime.fromISO(e.start, { zone: timezone });
+    recurringMap.set(key, {
+      summary: e.summary,
+      dayOfWeek: dt.toFormat("EEEE"),
+      time: dt.toFormat("HH:mm"),
+      attendees: e.attendees,
+    });
+  }
+
+  // Count attendee frequency
+  const attendeeCounts = new Map<string, number>();
+  for (const e of recentEvents) {
+    for (const a of e.attendees) {
+      attendeeCounts.set(a, (attendeeCounts.get(a) || 0) + 1);
+    }
+  }
+
+  // Find typical hours
+  let earliestHour = 23;
+  let latestHour = 0;
+  for (const e of recentEvents) {
+    if (e.allDay) continue;
+    const start = DateTime.fromISO(e.start, { zone: timezone });
+    const end = DateTime.fromISO(e.end, { zone: timezone });
+    if (start.hour < earliestHour) earliestHour = start.hour;
+    if (end.hour > latestHour) latestHour = end.hour;
+  }
+
+  // Find busiest day
+  const dayCounts: Record<string, number> = {};
+  for (const e of recentEvents) {
+    if (e.allDay) continue;
+    const dt = DateTime.fromISO(e.start, { zone: timezone });
+    const day = dt.toFormat("EEEE");
+    dayCounts[day] = (dayCounts[day] || 0) + 1;
+  }
+  const busiestDay = Object.entries(dayCounts).sort(([, a], [, b]) => b - a)[0]?.[0] || "Monday";
+
+  return {
+    recurringMeetings: Array.from(recurringMap.values()),
+    frequentAttendees: Array.from(attendeeCounts.entries())
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([name, count]) => ({ name, count })),
+    typicalHours: {
+      start: `${String(earliestHour).padStart(2, "0")}:00`,
+      end: `${String(latestHour).padStart(2, "0")}:00`,
+    },
+    busiestDay,
+    totalEvents: events.length,
+  };
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────
 

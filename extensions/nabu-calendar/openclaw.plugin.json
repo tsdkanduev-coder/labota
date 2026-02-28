@@ -5,12 +5,6 @@
       "label": "Enable Nabu Calendar",
       "help": "Enable the Nabu calendar assistant"
     },
-    "icsUrl": {
-      "label": "Calendar .ics URL",
-      "help": "Secret URL for your calendar's .ics feed (e.g., from Google Calendar)",
-      "sensitive": true,
-      "placeholder": "https://calendar.google.com/calendar/ical/..."
-    },
     "timezone": {
       "label": "Timezone",
       "help": "Your timezone (e.g., Europe/Moscow)",
@@ -43,7 +37,6 @@
     "additionalProperties": false,
     "properties": {
       "enabled": { "type": "boolean" },
-      "icsUrl": { "type": "string" },
       "timezone": { "type": "string" },
       "morningBriefHour": { "type": "number" },
       "eveningLookaheadHour": { "type": "number" },

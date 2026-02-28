@@ -5,15 +5,17 @@ import { z } from "zod";
 export const CalendarEventSchema = z.object({
   uid: z.string(),
   summary: z.string(),
-  start: z.string(), // ISO 8601
-  end: z.string(), // ISO 8601
+  start: z.string(), // ISO 8601 datetime (even for all-day events)
+  end: z.string(), // ISO 8601 datetime (even for all-day events)
   location: z.string().optional(),
   description: z.string().optional(),
   status: z.enum(["confirmed", "tentative", "cancelled"]).default("confirmed"),
+  transparency: z.enum(["opaque", "transparent"]).default("opaque"),
   attendees: z.array(z.string()).default([]),
   organizer: z.string().optional(),
   recurrenceId: z.string().optional(), // for recurring event instances
   isRecurring: z.boolean().default(false),
+  allDay: z.boolean().default(false), // D1: all-day events normalized to midnight datetime
 });
 export type CalendarEvent = z.infer<typeof CalendarEventSchema>;
 
@@ -133,3 +135,15 @@ export const FetchStateSchema = z.object({
   nextRetryAt: z.string().optional(),
 });
 export type FetchState = z.infer<typeof FetchStateSchema>;
+
+// ─── Fetch Result (returned by IcsFetcher.fetch()) ──────────────
+
+export const FetchResultSchema = z.object({
+  events: z.array(CalendarEventSchema),
+  diff: CalendarDiffSchema.nullable(), // null on first fetch
+  notModified: z.boolean(), // D5: explicit in all paths, true ONLY on 304
+  stale: z.boolean(), // true if serving from cache during backoff
+  source: z.enum(["network", "cache", "backoff"]),
+  fetchedAt: z.string(), // ISO 8601
+});
+export type FetchResult = z.infer<typeof FetchResultSchema>;
