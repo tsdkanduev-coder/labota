@@ -1,12 +1,35 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Type } from "@sinclair/typebox";
 import { DateTime } from "luxon";
+import * as crypto from "node:crypto";
 import type { CalendarEvent, CalendarSnapshot } from "./src/types.js";
 import { nabuCalendarConfigParser, resolveConfig, validateConfig } from "./src/config.js";
+import {
+  OAuthStateManager,
+  buildAuthUrl,
+  exchangeCode,
+  fetchUserInfo,
+  revokeToken,
+} from "./src/google-auth.js";
+import {
+  ensureValidToken,
+  createEvent as gcalCreateEvent,
+  updateEvent as gcalUpdateEvent,
+  deleteEvent as gcalDeleteEvent,
+  searchEvents as gcalSearchEvents,
+  getEvent as gcalGetEvent,
+} from "./src/google-calendar-api.js";
 import { IcsFetcher } from "./src/ics-fetcher.js";
 import { filterByDate, filterByRange, findFreeSlots } from "./src/ics-helpers.js";
 import { NabuLedger } from "./src/ledger.js";
 import { NabuStore } from "./src/store.js";
+
+// ─── Google OAuth Config ────────────────────────────────────────────
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
+const CONFIRM_SECRET = process.env.NABU_CONFIRM_SECRET || "";
+const BASE_URL = process.env.OPENCLAW_BASE_URL || "https://openclaw-1zxd.onrender.com";
 
 // ─── Allowed .ics hosts ──────────────────────────────────────────
 // P2 fix: host allowlist for URL validation
@@ -46,6 +69,12 @@ const NabuCalendarToolSchema = Type.Object({
       Type.Literal("record_incident"),
       Type.Literal("status"),
       Type.Literal("disable"),
+      // P2: Write-ops actions
+      Type.Literal("auth"),
+      Type.Literal("search_events"),
+      Type.Literal("create_event"),
+      Type.Literal("update_event"),
+      Type.Literal("delete_event"),
     ],
     { description: "Action to perform" },
   ),
@@ -81,6 +110,43 @@ const NabuCalendarToolSchema = Type.Object({
   incidentId: Type.Optional(Type.String({ description: "Incident ID (for handle_callback)" })),
   reminderMinutes: Type.Optional(
     Type.Number({ description: "Minutes before event to remind (for handle_callback remind)" }),
+  ),
+  // P2: Write-ops parameters
+  summary: Type.Optional(Type.String({ description: "Event title (for create/update)" })),
+  startDateTime: Type.Optional(
+    Type.String({ description: "Event start ISO datetime (for create/update)" }),
+  ),
+  endDateTime: Type.Optional(
+    Type.String({
+      description: "Event end ISO datetime (for create/update). Defaults to start + 60 min",
+    }),
+  ),
+  eventLocation: Type.Optional(Type.String({ description: "Event location (for create/update)" })),
+  eventDescription: Type.Optional(
+    Type.String({ description: "Event description (for create/update)" }),
+  ),
+  eventId: Type.Optional(
+    Type.String({ description: "Google Calendar event ID (for update/delete)" }),
+  ),
+  searchQuery: Type.Optional(
+    Type.String({ description: "Search query for finding events (for search_events)" }),
+  ),
+  searchDate: Type.Optional(
+    Type.String({ description: "Date to search around, ISO date (for search_events)" }),
+  ),
+  confirmed: Type.Optional(Type.Boolean({ description: "Confirm a previewed write operation" })),
+  confirmToken: Type.Optional(
+    Type.String({ description: "HMAC token from preview step (required with confirmed=true)" }),
+  ),
+  idempotencyKey: Type.Optional(
+    Type.String({
+      description: "Idempotency key from preview step (required with confirmed=true)",
+    }),
+  ),
+  expiresAt: Type.Optional(
+    Type.Number({
+      description: "Expiration timestamp from preview step (required with confirmed=true)",
+    }),
   ),
 });
 
@@ -136,6 +202,174 @@ const nabuCalendarPlugin = {
       return fetcher;
     };
 
+    let oauthStateManager: OAuthStateManager | null = null;
+    const ensureOAuthStateManager = (): OAuthStateManager => {
+      if (!oauthStateManager) oauthStateManager = new OAuthStateManager(getStateDir());
+      return oauthStateManager;
+    };
+
+    // ─── P2: HMAC Confirm Token ────────────────────────────────
+
+    function generateConfirmToken(payload: Record<string, unknown>): string {
+      const data = JSON.stringify(payload);
+      return crypto.createHmac("sha256", CONFIRM_SECRET).update(data).digest("hex");
+    }
+
+    function verifyConfirmToken(token: string, payload: Record<string, unknown>): boolean {
+      const expected = generateConfirmToken(payload);
+      if (token.length !== expected.length) return false;
+      return crypto.timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(expected, "hex"));
+    }
+
+    // ─── P2: Write-ops rate limit ──────────────────────────────
+
+    function checkAndIncrementRateLimit(chatId: number): { ok: boolean; error?: string } {
+      const s = ensureStore();
+      const cfg = s.get(chatId);
+      if (!cfg) return { ok: false, error: "not_configured" };
+
+      const currentHour = new Date().toISOString().slice(0, 13); // "2026-03-02T15"
+      let count = cfg.writeOpsHourCount;
+      const resetHour = cfg.writeOpsHourReset;
+
+      // Reset counter if hour changed
+      if (resetHour !== currentHour) {
+        count = 0;
+      }
+
+      if (count >= 10) {
+        return { ok: false, error: "rate_limit" };
+      }
+
+      s.update(chatId, {
+        writeOpsHourCount: count + 1,
+        writeOpsHourReset: currentHour,
+      });
+
+      return { ok: true };
+    }
+
+    // ─── P2: OAuth Callback HTTP Route ─────────────────────────
+
+    api.registerHttpRoute({
+      path: "/plugins/nabu-calendar/oauth/callback",
+      handler: async (req, res) => {
+        try {
+          const url = new URL(req.url || "", `https://${req.headers.host}`);
+          const code = url.searchParams.get("code");
+          const state = url.searchParams.get("state");
+          const error = url.searchParams.get("error");
+
+          if (error) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Authorization failed</h2><p>Error: ${error}</p><p>Return to Telegram and try again.</p></body></html>`,
+            );
+            return;
+          }
+
+          if (!code || !state) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Invalid request</h2><p>Missing code or state parameter.</p></body></html>`,
+            );
+            return;
+          }
+
+          const stateManager = ensureOAuthStateManager();
+          const pendingState = stateManager.resolve(state);
+
+          if (!pendingState) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Link expired</h2><p>Authorization link has expired or was already used. Return to Telegram and request a new link.</p></body></html>`,
+            );
+            return;
+          }
+
+          const redirectUri = `${BASE_URL}/plugins/nabu-calendar/oauth/callback`;
+          const tokens = await exchangeCode(
+            code,
+            pendingState.codeVerifier,
+            redirectUri,
+            GOOGLE_CLIENT_ID,
+            GOOGLE_CLIENT_SECRET,
+          );
+
+          // Fetch user info to show which account was connected
+          let userInfo: { email: string; name?: string } | null = null;
+          try {
+            userInfo = await fetchUserInfo(tokens.accessToken);
+          } catch (e) {
+            api.logger.warn(
+              `[nabu-calendar] Failed to fetch userinfo: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+
+          const email = userInfo?.email || "unknown";
+
+          // Update store with tokens
+          const s = ensureStore();
+          const existingConfig = s.get(pendingState.chatId);
+          if (existingConfig) {
+            s.update(pendingState.chatId, {
+              googleAccessToken: tokens.accessToken,
+              googleRefreshToken: tokens.refreshToken ?? existingConfig.googleRefreshToken,
+              googleAccessTokenExpiresAt: tokens.expiresAt,
+              googleCalendarConnected: true,
+              googleEmail: email,
+              writeEnabled: true,
+              consentMode: "act_with_confirmation",
+            });
+          }
+
+          // Notify user in Telegram
+          try {
+            const sendMsg = (
+              api as unknown as {
+                runtime?: {
+                  channel?: {
+                    telegram?: {
+                      sendMessageTelegram?: (to: string, text: string) => Promise<unknown>;
+                    };
+                  };
+                };
+              }
+            ).runtime?.channel?.telegram?.sendMessageTelegram;
+            if (sendMsg) {
+              await sendMsg(
+                String(pendingState.chatId),
+                `Google Calendar connected (account: ${email}). I can now create and modify events.`,
+              );
+            }
+          } catch (e) {
+            api.logger.warn(
+              `[nabu-calendar] Failed to send Telegram notification: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+
+          api.logger.info(
+            `[nabu-calendar] OAuth complete for chat ${pendingState.chatId}, email=${email}`,
+          );
+
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(`<html><body style="font-family: sans-serif; text-align: center; padding: 40px;">
+            <h2>Done! ✓</h2>
+            <p>Account <strong>${email}</strong> connected.</p>
+            <p>Return to Telegram.</p>
+          </body></html>`);
+        } catch (err) {
+          api.logger.error(
+            `[nabu-calendar] OAuth callback error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(
+            `<html><body><h2>Server error</h2><p>Something went wrong. Please try again.</p></body></html>`,
+          );
+        }
+      },
+    });
+
     // ─── Register Tool ─────────────────────────────────────────
 
     api.registerTool((toolCtx) => {
@@ -166,6 +400,17 @@ const nabuCalendarPlugin = {
                 return await handleStatus(chatId);
               case "disable":
                 return await handleDisable(chatId);
+              // P2: Write-ops actions
+              case "auth":
+                return await handleAuth(chatId);
+              case "search_events":
+                return await handleSearchEvents(params, chatId);
+              case "create_event":
+                return await handleCreateEvent(params, chatId);
+              case "update_event":
+                return await handleUpdateEvent(params, chatId);
+              case "delete_event":
+                return await handleDeleteEvent(params, chatId);
               default:
                 return textResult({ error: "Unknown action" });
             }
@@ -262,6 +507,10 @@ const nabuCalendarPlugin = {
         syncIntervalMs: config.syncIntervalMs,
         writeEnabled: config.writeEnabled,
         createdAt: new Date().toISOString(),
+        // P2: defaults for Google Calendar write-ops fields
+        googleCalendarConnected: false,
+        consentMode: "read_only" as const,
+        writeOpsHourCount: 0,
       };
 
       s.set(chatId, userConfig);
@@ -658,6 +907,11 @@ const nabuCalendarPlugin = {
         writeEnabled: userConfig.writeEnabled,
         proactiveMessagesToday: todayCount,
         lastFetchAt: userConfig.lastFetchAt || "never",
+        // P2: Google Calendar write-ops status
+        googleCalendarConnected: userConfig.googleCalendarConnected,
+        googleEmail: userConfig.googleEmail,
+        consentMode: userConfig.consentMode,
+        writeOpsHourCount: userConfig.writeOpsHourCount,
       });
     }
 
@@ -667,6 +921,24 @@ const nabuCalendarPlugin = {
       }
 
       const s = ensureStore();
+      const userConfig = s.get(chatId);
+
+      // Revoke Google tokens if connected
+      if (userConfig?.googleAccessToken) {
+        try {
+          await revokeToken(userConfig.googleAccessToken);
+        } catch {
+          // Best-effort revocation
+        }
+      }
+      if (userConfig?.googleRefreshToken) {
+        try {
+          await revokeToken(userConfig.googleRefreshToken);
+        } catch {
+          // Best-effort revocation
+        }
+      }
+
       const deleted = s.delete(chatId);
 
       if (deleted) {
@@ -694,6 +966,689 @@ const nabuCalendarPlugin = {
         instruction: deleted
           ? `Remove these cron jobs using cron({ action: "remove", name: "<name>" }) for each: ${cronJobNames.join(", ")}`
           : undefined,
+      });
+    }
+
+    // ─── P2: Write-ops Handlers ───────────────────────────────
+
+    async function handleAuth(chatId: number | null) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+        return textResult({
+          error:
+            "Google Calendar API not configured. GOOGLE_CALENDAR_CLIENT_ID and GOOGLE_CALENDAR_CLIENT_SECRET must be set.",
+        });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+
+      if (!userConfig) {
+        return textResult({
+          error:
+            "Calendar not set up. Connect ICS feed first, then authorize Google Calendar for write access.",
+        });
+      }
+
+      // Check if already connected
+      if (userConfig.googleCalendarConnected) {
+        return textResult({
+          alreadyConnected: true,
+          googleEmail: userConfig.googleEmail,
+          message: `Google Calendar is already connected (${userConfig.googleEmail || "unknown account"}).`,
+        });
+      }
+
+      // Check if ICS URL is from Google Calendar
+      try {
+        const icsHost = new URL(userConfig.icsUrl).hostname;
+        if (!icsHost.includes("google")) {
+          return textResult({
+            warning:
+              "Your calendar is not from Google Calendar. Write-ops (create/update/delete) only work with Google Calendar.",
+            canProceed: true,
+          });
+        }
+      } catch {
+        // URL parse error — proceed anyway
+      }
+
+      const stateManager = ensureOAuthStateManager();
+      const { authUrl } = buildAuthUrl(chatId, BASE_URL, GOOGLE_CLIENT_ID, stateManager);
+
+      return textResult({
+        authUrl,
+        instruction:
+          "Send this link to the user. They need to click it and authorize Google Calendar access in their browser.",
+      });
+    }
+
+    async function handleSearchEvents(
+      params: { searchQuery?: string; searchDate?: string },
+      chatId: number | null,
+    ) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      if (!CONFIRM_SECRET) {
+        return textResult({
+          error: "write_ops_not_configured",
+          message: "NABU_CONFIRM_SECRET not set — write-ops disabled",
+        });
+      }
+
+      if (!params.searchQuery) {
+        return textResult({ error: "searchQuery is required" });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+      if (!userConfig?.googleCalendarConnected) {
+        return textResult({
+          error: "Google Calendar not connected. Call auth first.",
+          needsAuth: true,
+        });
+      }
+
+      // Build time range around searchDate
+      let timeMin: string | undefined;
+      let timeMax: string | undefined;
+      if (params.searchDate) {
+        const dt = DateTime.fromISO(params.searchDate, { zone: userConfig.timezone });
+        timeMin = dt.startOf("day").toISO() || undefined;
+        timeMax = dt.endOf("day").toISO() || undefined;
+      }
+
+      const result = await gcalSearchEvents(
+        s,
+        chatId,
+        params.searchQuery,
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+        timeMin,
+        timeMax,
+      );
+
+      if (!result.ok) {
+        return textResult({ ...result });
+      }
+
+      const candidates = result.data.map((e) => ({
+        eventId: e.id,
+        summary: e.summary,
+        start: e.start?.dateTime || e.start?.date,
+        end: e.end?.dateTime || e.end?.date,
+        location: e.location,
+        recurringEventId: e.recurringEventId,
+      }));
+
+      return textResult({
+        ok: true,
+        candidates,
+        count: candidates.length,
+        instruction:
+          candidates.length > 1
+            ? "Multiple events found. Show the list to the user and ask which one they want to modify."
+            : candidates.length === 1
+              ? "One event found. Proceed with the eventId for update/delete."
+              : "No events found matching the query.",
+      });
+    }
+
+    async function handleCreateEvent(
+      params: {
+        summary?: string;
+        startDateTime?: string;
+        endDateTime?: string;
+        eventLocation?: string;
+        eventDescription?: string;
+        confirmed?: boolean;
+        confirmToken?: string;
+        idempotencyKey?: string;
+        expiresAt?: number;
+      },
+      chatId: number | null,
+    ) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      // Fail-closed: no CONFIRM_SECRET = no write-ops
+      if (!CONFIRM_SECRET) {
+        return textResult({
+          error: "write_ops_not_configured",
+          message: "NABU_CONFIRM_SECRET not set — write-ops disabled",
+        });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+      if (!userConfig?.googleCalendarConnected) {
+        return textResult({
+          error: "Google Calendar not connected. Call auth first.",
+          needsAuth: true,
+        });
+      }
+
+      if (!params.summary || !params.startDateTime) {
+        return textResult({ error: "summary and startDateTime are required" });
+      }
+
+      // Default duration: 60 minutes if endDateTime not specified
+      const endDateTime =
+        params.endDateTime || DateTime.fromISO(params.startDateTime).plus({ minutes: 60 }).toISO();
+      if (!endDateTime) {
+        return textResult({ error: "Invalid startDateTime format" });
+      }
+
+      if (params.confirmed) {
+        // ── Confirmed: execute the write ──
+
+        if (!params.confirmToken || !params.idempotencyKey || !params.expiresAt) {
+          return textResult({
+            error: "confirmToken, idempotencyKey, and expiresAt are required with confirmed=true",
+          });
+        }
+
+        // Reconstruct payload and verify HMAC
+        const payload = {
+          action: "create_event",
+          chatId,
+          summary: params.summary,
+          startDateTime: params.startDateTime,
+          endDateTime,
+          idempotencyKey: params.idempotencyKey,
+          exp: params.expiresAt,
+        };
+
+        if (!verifyConfirmToken(params.confirmToken, payload)) {
+          return textResult({
+            error: "stale_confirmation",
+            message: "Parameters changed since preview. Please request a new preview.",
+          });
+        }
+
+        // Check expiration — auto-refresh if expired
+        if (Date.now() > params.expiresAt) {
+          // Auto-refresh: generate new preview
+          const newIdempotencyKey = crypto.randomUUID();
+          const newExp = Date.now() + 10 * 60_000;
+          const newPayload = {
+            action: "create_event",
+            chatId,
+            summary: params.summary,
+            startDateTime: params.startDateTime,
+            endDateTime,
+            idempotencyKey: newIdempotencyKey,
+            exp: newExp,
+          };
+          const newConfirmToken = generateConfirmToken(newPayload);
+
+          return textResult({
+            error: "confirmation_expired",
+            refreshedPreview: {
+              summary: params.summary,
+              startDateTime: params.startDateTime,
+              endDateTime,
+              location: params.eventLocation,
+            },
+            newConfirmToken,
+            newIdempotencyKey,
+            newExpiresAt: newExp,
+            instruction: "Show the updated preview to the user and ask for confirmation again.",
+          });
+        }
+
+        // Rate limit check
+        const rateResult = checkAndIncrementRateLimit(chatId);
+        if (!rateResult.ok) {
+          return textResult({
+            error: "rate_limit",
+            message: "Too many write operations this hour. Try again later.",
+          });
+        }
+
+        // Execute create
+        const event = {
+          summary: params.summary,
+          start: { dateTime: params.startDateTime },
+          end: { dateTime: endDateTime },
+          ...(params.eventLocation && { location: params.eventLocation }),
+          ...(params.eventDescription && { description: params.eventDescription }),
+        };
+
+        const result = await gcalCreateEvent(
+          s,
+          chatId,
+          event,
+          GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET,
+          params.idempotencyKey,
+        );
+
+        if (!result.ok) {
+          return textResult({ ...result });
+        }
+
+        const alreadyExists =
+          "_alreadyExists" in result.data &&
+          (result.data as Record<string, unknown>)._alreadyExists;
+
+        return textResult({
+          ok: true,
+          eventId: result.data.id,
+          htmlLink: result.data.htmlLink,
+          alreadyExists: !!alreadyExists,
+          syncNote:
+            "Event created. It may take up to 15 minutes to appear in read mode (ICS feed).",
+        });
+      }
+
+      // ── Preview mode: generate confirmToken ──
+
+      // Soft duplicate check
+      let duplicateWarning: string | undefined;
+      try {
+        const startDt = DateTime.fromISO(params.startDateTime);
+        const endDt = DateTime.fromISO(endDateTime);
+        const searchResult = await gcalSearchEvents(
+          s,
+          chatId,
+          params.summary,
+          GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET,
+          startDt.minus({ hours: 1 }).toISO() || undefined,
+          endDt.plus({ hours: 1 }).toISO() || undefined,
+          3,
+        );
+        if (searchResult.ok && searchResult.data.length > 0) {
+          const similar = searchResult.data[0]!;
+          duplicateWarning = `Similar event already exists: "${similar.summary}" at ${similar.start?.dateTime || similar.start?.date}. Create another one?`;
+        }
+      } catch {
+        // Duplicate check is best-effort
+      }
+
+      const idempotencyKey = crypto.randomUUID();
+      const exp = Date.now() + 10 * 60_000;
+      const payload = {
+        action: "create_event",
+        chatId,
+        summary: params.summary,
+        startDateTime: params.startDateTime,
+        endDateTime,
+        idempotencyKey,
+        exp,
+      };
+      const confirmToken = generateConfirmToken(payload);
+
+      return textResult({
+        status: "needs_confirmation",
+        preview: {
+          summary: params.summary,
+          startDateTime: params.startDateTime,
+          endDateTime,
+          location: params.eventLocation,
+          description: params.eventDescription,
+        },
+        confirmToken,
+        idempotencyKey,
+        expiresAt: exp,
+        ...(duplicateWarning && { duplicateWarning }),
+        instruction:
+          "Show the preview to the user and ask for confirmation. Pass confirmToken, idempotencyKey, and expiresAt back with confirmed=true.",
+      });
+    }
+
+    async function handleUpdateEvent(
+      params: {
+        eventId?: string;
+        summary?: string;
+        startDateTime?: string;
+        endDateTime?: string;
+        eventLocation?: string;
+        eventDescription?: string;
+        confirmed?: boolean;
+        confirmToken?: string;
+        idempotencyKey?: string;
+        expiresAt?: number;
+      },
+      chatId: number | null,
+    ) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      if (!CONFIRM_SECRET) {
+        return textResult({
+          error: "write_ops_not_configured",
+          message: "NABU_CONFIRM_SECRET not set — write-ops disabled",
+        });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+      if (!userConfig?.googleCalendarConnected) {
+        return textResult({
+          error: "Google Calendar not connected. Call auth first.",
+          needsAuth: true,
+        });
+      }
+
+      if (!params.eventId) {
+        return textResult({
+          error: "eventId is required. Use search_events to find the event first.",
+        });
+      }
+
+      if (params.confirmed) {
+        // ── Confirmed: execute the update ──
+
+        if (!params.confirmToken || !params.idempotencyKey || !params.expiresAt) {
+          return textResult({
+            error: "confirmToken, idempotencyKey, and expiresAt are required with confirmed=true",
+          });
+        }
+
+        // Build updates object
+        const updates: Record<string, unknown> = {};
+        if (params.summary) updates.summary = params.summary;
+        if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
+        if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
+        if (params.eventLocation !== undefined) updates.location = params.eventLocation;
+        if (params.eventDescription !== undefined) updates.description = params.eventDescription;
+
+        const payload = {
+          action: "update_event",
+          chatId,
+          eventId: params.eventId,
+          ...updates,
+          idempotencyKey: params.idempotencyKey,
+          exp: params.expiresAt,
+        };
+
+        if (!verifyConfirmToken(params.confirmToken, payload)) {
+          return textResult({
+            error: "stale_confirmation",
+            message: "Parameters changed since preview. Please request a new preview.",
+          });
+        }
+
+        if (Date.now() > params.expiresAt) {
+          // Auto-refresh
+          const newIdempotencyKey = crypto.randomUUID();
+          const newExp = Date.now() + 10 * 60_000;
+          const newPayload = { ...payload, idempotencyKey: newIdempotencyKey, exp: newExp };
+          const newConfirmToken = generateConfirmToken(newPayload);
+
+          return textResult({
+            error: "confirmation_expired",
+            refreshedPreview: { eventId: params.eventId, ...updates },
+            newConfirmToken,
+            newIdempotencyKey,
+            newExpiresAt: newExp,
+            instruction: "Show the updated preview and ask for confirmation again.",
+          });
+        }
+
+        const rateResult = checkAndIncrementRateLimit(chatId);
+        if (!rateResult.ok) {
+          return textResult({
+            error: "rate_limit",
+            message: "Too many write operations this hour. Try again later.",
+          });
+        }
+
+        const result = await gcalUpdateEvent(
+          s,
+          chatId,
+          params.eventId,
+          updates as Record<string, unknown> & { summary?: string },
+          GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET,
+        );
+
+        if (!result.ok) {
+          return textResult({ ...result });
+        }
+
+        return textResult({
+          ok: true,
+          eventId: result.data.id,
+          htmlLink: result.data.htmlLink,
+          syncNote: "Event updated. It may take up to 15 minutes to reflect in read mode.",
+        });
+      }
+
+      // ── Preview mode ──
+
+      // Get current event to check for recurring / past-event
+      const existingEvent = await gcalGetEvent(
+        s,
+        chatId,
+        params.eventId,
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+      );
+      if (!existingEvent.ok) {
+        return textResult({ ...existingEvent });
+      }
+
+      const warnings: Record<string, string> = {};
+
+      // Recurring event check
+      if (existingEvent.data.recurringEventId) {
+        warnings.recurringWarning =
+          "This is a recurring event. In V1.1, only this single instance can be modified.";
+      }
+
+      // Past event check
+      const eventEnd = existingEvent.data.end?.dateTime || existingEvent.data.end?.date;
+      if (eventEnd && new Date(eventEnd) < new Date()) {
+        warnings.pastEventWarning = "This event has already passed.";
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (params.summary) updates.summary = params.summary;
+      if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
+      if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
+      if (params.eventLocation !== undefined) updates.location = params.eventLocation;
+      if (params.eventDescription !== undefined) updates.description = params.eventDescription;
+
+      const idempotencyKey = crypto.randomUUID();
+      const exp = Date.now() + 10 * 60_000;
+      const payload = {
+        action: "update_event",
+        chatId,
+        eventId: params.eventId,
+        ...updates,
+        idempotencyKey,
+        exp,
+      };
+      const confirmToken = generateConfirmToken(payload);
+
+      return textResult({
+        status: "needs_confirmation",
+        preview: {
+          eventId: params.eventId,
+          currentEvent: {
+            summary: existingEvent.data.summary,
+            start: existingEvent.data.start?.dateTime || existingEvent.data.start?.date,
+            end: existingEvent.data.end?.dateTime || existingEvent.data.end?.date,
+            location: existingEvent.data.location,
+          },
+          updates,
+        },
+        confirmToken,
+        idempotencyKey,
+        expiresAt: exp,
+        ...warnings,
+        instruction: "Show the preview to the user and ask for confirmation.",
+      });
+    }
+
+    async function handleDeleteEvent(
+      params: {
+        eventId?: string;
+        confirmed?: boolean;
+        confirmToken?: string;
+        idempotencyKey?: string;
+        expiresAt?: number;
+      },
+      chatId: number | null,
+    ) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      if (!CONFIRM_SECRET) {
+        return textResult({
+          error: "write_ops_not_configured",
+          message: "NABU_CONFIRM_SECRET not set — write-ops disabled",
+        });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+      if (!userConfig?.googleCalendarConnected) {
+        return textResult({
+          error: "Google Calendar not connected. Call auth first.",
+          needsAuth: true,
+        });
+      }
+
+      if (!params.eventId) {
+        return textResult({
+          error: "eventId is required. Use search_events to find the event first.",
+        });
+      }
+
+      if (params.confirmed) {
+        // ── Confirmed: execute the delete ──
+
+        if (!params.confirmToken || !params.idempotencyKey || !params.expiresAt) {
+          return textResult({
+            error: "confirmToken, idempotencyKey, and expiresAt are required with confirmed=true",
+          });
+        }
+
+        const payload = {
+          action: "delete_event",
+          chatId,
+          eventId: params.eventId,
+          idempotencyKey: params.idempotencyKey,
+          exp: params.expiresAt,
+        };
+
+        if (!verifyConfirmToken(params.confirmToken, payload)) {
+          return textResult({
+            error: "stale_confirmation",
+            message: "Parameters changed since preview. Please request a new preview.",
+          });
+        }
+
+        if (Date.now() > params.expiresAt) {
+          // Auto-refresh
+          const newIdempotencyKey = crypto.randomUUID();
+          const newExp = Date.now() + 10 * 60_000;
+          const newPayload = { ...payload, idempotencyKey: newIdempotencyKey, exp: newExp };
+          const newConfirmToken = generateConfirmToken(newPayload);
+
+          return textResult({
+            error: "confirmation_expired",
+            refreshedPreview: { eventId: params.eventId, action: "delete" },
+            newConfirmToken,
+            newIdempotencyKey,
+            newExpiresAt: newExp,
+            instruction: "Show the updated preview and ask for confirmation again.",
+          });
+        }
+
+        const rateResult = checkAndIncrementRateLimit(chatId);
+        if (!rateResult.ok) {
+          return textResult({
+            error: "rate_limit",
+            message: "Too many write operations this hour. Try again later.",
+          });
+        }
+
+        const result = await gcalDeleteEvent(
+          s,
+          chatId,
+          params.eventId,
+          GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET,
+        );
+
+        if (!result.ok) {
+          return textResult({ ...result });
+        }
+
+        return textResult({
+          ok: true,
+          deleted: result.data.deleted,
+          alreadyDeleted: result.data.alreadyDeleted,
+          syncNote: "Event deleted. It may take up to 15 minutes to disappear from read mode.",
+        });
+      }
+
+      // ── Preview mode ──
+
+      const existingEvent = await gcalGetEvent(
+        s,
+        chatId,
+        params.eventId,
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+      );
+      if (!existingEvent.ok) {
+        return textResult({ ...existingEvent });
+      }
+
+      const warnings: Record<string, string> = {};
+
+      if (existingEvent.data.recurringEventId) {
+        warnings.recurringWarning =
+          "This is a recurring event. Only this single instance will be deleted.";
+      }
+
+      const eventEnd = existingEvent.data.end?.dateTime || existingEvent.data.end?.date;
+      if (eventEnd && new Date(eventEnd) < new Date()) {
+        warnings.pastEventWarning = "This event has already passed.";
+      }
+
+      const idempotencyKey = crypto.randomUUID();
+      const exp = Date.now() + 10 * 60_000;
+      const payload = {
+        action: "delete_event",
+        chatId,
+        eventId: params.eventId,
+        idempotencyKey,
+        exp,
+      };
+      const confirmToken = generateConfirmToken(payload);
+
+      return textResult({
+        status: "needs_confirmation",
+        preview: {
+          action: "delete",
+          eventId: params.eventId,
+          event: {
+            summary: existingEvent.data.summary,
+            start: existingEvent.data.start?.dateTime || existingEvent.data.start?.date,
+            end: existingEvent.data.end?.dateTime || existingEvent.data.end?.date,
+            location: existingEvent.data.location,
+          },
+        },
+        confirmToken,
+        idempotencyKey,
+        expiresAt: exp,
+        ...warnings,
+        instruction: "Show the preview to the user and ask for confirmation.",
       });
     }
   },
@@ -784,6 +1739,11 @@ function textResult(data: Record<string, unknown>) {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
     details: data,
   };
+}
+
+/** textResult wrapper that accepts typed error objects by spreading them */
+function errorResult(err: { ok: false; error: string; message: string; needsReauth?: boolean }) {
+  return textResult({ ...err });
 }
 
 function extractChatId(messageTo?: string): number | null {
