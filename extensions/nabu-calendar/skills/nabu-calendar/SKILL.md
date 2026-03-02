@@ -22,19 +22,74 @@ One tool, parameter `action`:
 - `find_slots` — free slots: `{ action: "find_slots", date: "today", durationMin: 60 }`
 - `handle_callback` — process button taps: `{ action: "handle_callback", callbackAction: "ack", incidentId: "..." }`
 - `record_incident` — log a proactive message for dedup/cooldown: `{ action: "record_incident", incidentId: "...", trigger: "periodic-sync", textSnippet: "..." }`
+- `auth` — connect Google Calendar for write access: `{ action: "auth" }`
+- `search_events` — find events by name/date: `{ action: "search_events", searchQuery: "...", searchDate: "2026-03-03" }`
+- `create_event` — create event (two-step: preview → confirm): `{ action: "create_event", summary: "...", startDateTime: "...", endDateTime: "..." }`
+- `update_event` — update event (two-step): `{ action: "update_event", eventId: "...", summary: "..." }`
+- `delete_event` — delete event (two-step): `{ action: "delete_event", eventId: "..." }`
 - `status` / `disable` — status / disconnect
 
 After setup — create ALL cron jobs from the cronJobs[] field using the cron tool.
 
+## Write Operations (Google Calendar)
+
+Check status → `googleCalendarConnected`. If false and user asks to modify calendar:
+→ call `auth`, send the link to the user.
+
+### Write-ops flow:
+
+1. Gather data (title, time, location)
+2. Call action WITHOUT `confirmed` → get preview + confirmToken + idempotencyKey + expiresAt
+3. Show preview to user, ask for confirmation. If duplicateWarning present — show it
+4. User confirms → call action WITH `confirmed=true`, `confirmToken`, `idempotencyKey`, and `expiresAt` (pass the exact values from step 2)
+5. Report result + syncNote if present
+
+### For update/delete:
+
+1. Call `search_events` to find the event
+2. If multiple candidates → show list, ask user to choose
+3. Then proceed as above (preview → confirm → execute)
+4. If `recurringWarning` — tell user only this instance is being changed
+5. If `pastEventWarning` — say "this event has already passed, are you sure?"
+
+### Rules:
+
+- NEVER call create/update/delete with confirmed=true without explicit user confirmation
+- ALWAYS pass confirmToken, idempotencyKey AND expiresAt from the preview response
+- After a voice-call booking — suggest adding it to the calendar
+- After successful creation: "Added to calendar ✓" + syncNote (delay up to 15 min in read mode)
+
+### Vague time — suggest a specific one:
+
+- User says "evening" → you: "I'll put it at 18:00, ok?" (NOT "what time?")
+- "after lunch" → "I'll set it for 14:00?"
+- "morning" → "I'll set it for 09:00?"
+- User can correct: "no, better at 19" → you adjust
+- Rule: ALWAYS suggest a specific time first, never ask an open-ended question
+
+### Default duration:
+
+- If user didn't specify end → 1 hour
+- "Dinner" / "lunch" → 1.5 hours
+- "Meeting" / "call" → 1 hour
+- Show duration in preview: "19:00–20:00 (1 hour)"
+
+### Recurring events:
+
+- If `recurringWarning` in response → say "This is a recurring event, modifying only this instance"
+- In V1.1 the whole series cannot be modified — explain if user asks
+
+### Errors — explain in human terms:
+
+- forbidden → "You don't have permission to modify this event (you might not be the organizer)"
+- confirmation_expired → show the updated preview automatically, don't ask user to repeat the request
+- rate_limit → "Too many changes this hour, try again later"
+- needsReauth → "Google Calendar access expired, need to reconnect: [link]"
+
 ## Limitations (IMPORTANT)
 
-1. You CANNOT create, modify, or cancel events in the calendar (write-ops disabled) — TEMPORARY, will be lifted when write-ops are enabled
-2. Do NOT promise booking, rescheduling, or cancellation through the calendar — TEMPORARY
-3. If the user asks to change the calendar — explain it's read-only for now, suggest doing it manually — TEMPORARY
-4. Do NOT reveal the .ics URL
-5. Do NOT fabricate events — only use data from fetch
-
-> TODO (post-MVP): when writeEnabled=true — replace items 1-3 with write-ops guidance including confirm flow
+1. Do NOT reveal the .ics URL
+2. Do NOT fabricate events — only use data from fetch
 
 ## Proactive Model (for cron jobs)
 
@@ -117,8 +172,8 @@ might want to take.
 
 - Never include the .ics URL in messages (it's a secret URL)
 - Never invent events that aren't in the calendar data
-- Never promise to create/move/cancel events (write-ops are disabled)
-- If calendar is not connected, guide the user through setup
+- If Google Calendar is not connected for writes, guide the user through auth
+- If calendar is not connected at all, guide the user through setup
 
 ## Examples
 

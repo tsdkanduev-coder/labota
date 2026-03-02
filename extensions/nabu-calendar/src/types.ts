@@ -56,8 +56,45 @@ export const NabuUserConfigSchema = z.object({
   createdAt: z.string(), // ISO 8601
   lastFetchAt: z.string().optional(),
   lastEtag: z.string().optional(),
+  // P2: Google Calendar write-ops (OAuth tokens)
+  googleAccessToken: z.string().optional(),
+  googleRefreshToken: z.string().optional(),
+  googleAccessTokenExpiresAt: z.number().optional(), // epoch ms
+  googleCalendarConnected: z.boolean().default(false),
+  googleEmail: z.string().optional(), // email from userinfo (display purpose)
+  consentMode: z.enum(["read_only", "act_with_confirmation"]).default("read_only"),
+  writeOpsHourCount: z.number().default(0), // rate limit: writes this hour
+  writeOpsHourReset: z.string().optional(), // ISO hour start (reset when hour changes)
 });
 export type NabuUserConfig = z.infer<typeof NabuUserConfigSchema>;
+
+// ─── Google Calendar API Types ──────────────────────────────────
+
+export interface GoogleCalendarEventInput {
+  summary: string;
+  start: { dateTime: string; timeZone?: string };
+  end: { dateTime: string; timeZone?: string };
+  location?: string;
+  description?: string;
+  extendedProperties?: {
+    private?: Record<string, string>;
+  };
+}
+
+export interface GoogleCalendarEvent {
+  id: string;
+  summary?: string;
+  start?: { dateTime?: string; date?: string; timeZone?: string };
+  end?: { dateTime?: string; date?: string; timeZone?: string };
+  location?: string;
+  description?: string;
+  status?: string;
+  htmlLink?: string;
+  recurringEventId?: string;
+  extendedProperties?: {
+    private?: Record<string, string>;
+  };
+}
 
 // ─── Incident / Ledger ──────────────────────────────────────────
 
