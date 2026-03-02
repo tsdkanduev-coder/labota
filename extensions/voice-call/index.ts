@@ -1020,7 +1020,10 @@ export function buildGoogleCalendarUrl(booking: BookingDetails): string | null {
   if (booking.address) params.set("location", booking.address);
   else if (booking.restaurant) params.set("location", booking.restaurant);
 
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  // URLSearchParams encodes "/" as "%2F", but Google Calendar expects literal
+  // slashes in `dates` (start/end separator) and `ctz` (Europe/Moscow).
+  const qs = params.toString().replace(/%2F/gi, "/");
+  return `https://calendar.google.com/calendar/render?${qs}`;
 }
 
 /**
