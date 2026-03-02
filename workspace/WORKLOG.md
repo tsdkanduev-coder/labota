@@ -167,7 +167,7 @@
 | `workspace/CALENDAR_BOT_TOOLS.md`     | V1.1/V2 спека   | Расширенный набор тулов          |
 | `workspace/CALENDAR_DATA_API.md`      | V2 спека        | Backend API + PostgreSQL         |
 | `workspace/CALENDAR_MOCKUP_REVIEW.md` | Reference       | Обзор iOS mockups                |
-| `apps/.../NABU_TIER_SYSTEM.md`        | V2 спека        | 8-stage importance pipeline      |
+| `apps/LabotaCalendarPreview/NABU_TIER_SYSTEM.md` | V2 спека (в git) | 9-stage pipeline, two-score priority, 60 KB |
 
 ---
 
@@ -175,7 +175,8 @@
 
 ### P0: Прямо сейчас
 
-- [ ] Закоммитить и задеплоить Codex-фиксы (calendar)
+- [x] Закоммитить и задеплоить Codex-фиксы (calendar) — `ab167c3`, Render live 28 фев 22:05
+- [ ] **BUG:** Instance crashes (exit status 1) на Render — 1 мар 8:09 AM и 6:29 PM, service auto-recovered. Нужна диагностика логов.
 - [ ] Переподключить календарь на проде (пересоздать cron jobs с NO_REPLY)
 - [ ] Тест на проде: проактивные + реактивные сценарии
 
