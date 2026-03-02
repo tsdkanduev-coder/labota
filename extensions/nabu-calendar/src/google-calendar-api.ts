@@ -49,6 +49,14 @@ export async function ensureValidToken(
     };
   }
 
+  // Check if access token is still valid (with 60s buffer) — before requiring refreshToken
+  if (config.googleAccessToken && config.googleAccessTokenExpiresAt) {
+    if (config.googleAccessTokenExpiresAt > Date.now() + 60_000) {
+      return { accessToken: config.googleAccessToken };
+    }
+  }
+
+  // Access token expired or missing — need refresh token to continue
   if (!config.googleRefreshToken) {
     return {
       ok: false,
@@ -58,14 +66,7 @@ export async function ensureValidToken(
     };
   }
 
-  // Check if token is still valid (with 60s buffer)
-  if (config.googleAccessToken && config.googleAccessTokenExpiresAt) {
-    if (config.googleAccessTokenExpiresAt > Date.now() + 60_000) {
-      return { accessToken: config.googleAccessToken };
-    }
-  }
-
-  // Token expired — refresh
+  // Refresh the token
   try {
     const refreshed = await refreshAccessToken(config.googleRefreshToken, clientId, clientSecret);
     // IMPORTANT: never overwrite existing refreshToken with undefined

@@ -216,9 +216,16 @@ const nabuCalendarPlugin = {
     }
 
     function verifyConfirmToken(token: string, payload: Record<string, unknown>): boolean {
-      const expected = generateConfirmToken(payload);
-      if (token.length !== expected.length) return false;
-      return crypto.timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(expected, "hex"));
+      try {
+        const expected = generateConfirmToken(payload);
+        if (token.length !== expected.length) return false;
+        // Validate hex before comparing — malformed hex produces shorter buffers
+        if (!/^[\da-f]+$/i.test(token)) return false;
+        return crypto.timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(expected, "hex"));
+      } catch {
+        // Malformed token (e.g., non-hex chars slipping through, odd length)
+        return false;
+      }
     }
 
     // ─── P2: Write-ops rate limit ──────────────────────────────
@@ -1002,15 +1009,13 @@ const nabuCalendarPlugin = {
         });
       }
 
-      // Check if ICS URL is from Google Calendar
+      // Check if ICS URL is from Google Calendar — warn but don't block
+      let nonGoogleWarning: string | undefined;
       try {
         const icsHost = new URL(userConfig.icsUrl).hostname;
         if (!icsHost.includes("google")) {
-          return textResult({
-            warning:
-              "Your calendar is not from Google Calendar. Write-ops (create/update/delete) only work with Google Calendar.",
-            canProceed: true,
-          });
+          nonGoogleWarning =
+            "Your calendar feed is not from Google Calendar. Write-ops (create/update/delete) only work with Google Calendar.";
         }
       } catch {
         // URL parse error — proceed anyway
@@ -1021,6 +1026,7 @@ const nabuCalendarPlugin = {
 
       return textResult({
         authUrl,
+        ...(nonGoogleWarning && { warning: nonGoogleWarning }),
         instruction:
           "Send this link to the user. They need to click it and authorize Google Calendar access in their browser.",
       });
@@ -1134,6 +1140,14 @@ const nabuCalendarPlugin = {
         });
       }
 
+      if (userConfig.consentMode !== "act_with_confirmation") {
+        return textResult({
+          error:
+            "Write operations require consent mode 'act_with_confirmation'. Reconnect Google Calendar.",
+          needsAuth: true,
+        });
+      }
+
       if (!params.summary || !params.startDateTime) {
         return textResult({ error: "summary and startDateTime are required" });
       }
@@ -1161,6 +1175,8 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
+          eventLocation: params.eventLocation,
+          eventDescription: params.eventDescription,
           idempotencyKey: params.idempotencyKey,
           exp: params.expiresAt,
         };
@@ -1183,6 +1199,8 @@ const nabuCalendarPlugin = {
             summary: params.summary,
             startDateTime: params.startDateTime,
             endDateTime,
+            eventLocation: params.eventLocation,
+            eventDescription: params.eventDescription,
             idempotencyKey: newIdempotencyKey,
             exp: newExp,
           };
@@ -1281,6 +1299,8 @@ const nabuCalendarPlugin = {
         summary: params.summary,
         startDateTime: params.startDateTime,
         endDateTime,
+        eventLocation: params.eventLocation,
+        eventDescription: params.eventDescription,
         idempotencyKey,
         exp,
       };
@@ -1335,6 +1355,14 @@ const nabuCalendarPlugin = {
       if (!userConfig?.googleCalendarConnected) {
         return textResult({
           error: "Google Calendar not connected. Call auth first.",
+          needsAuth: true,
+        });
+      }
+
+      if (userConfig.consentMode !== "act_with_confirmation") {
+        return textResult({
+          error:
+            "Write operations require consent mode 'act_with_confirmation'. Reconnect Google Calendar.",
           needsAuth: true,
         });
       }
@@ -1517,6 +1545,14 @@ const nabuCalendarPlugin = {
       if (!userConfig?.googleCalendarConnected) {
         return textResult({
           error: "Google Calendar not connected. Call auth first.",
+          needsAuth: true,
+        });
+      }
+
+      if (userConfig.consentMode !== "act_with_confirmation") {
+        return textResult({
+          error:
+            "Write operations require consent mode 'act_with_confirmation'. Reconnect Google Calendar.",
           needsAuth: true,
         });
       }
