@@ -14,6 +14,8 @@ interface GcalFetchError {
   error: string;
   message: string;
   needsReauth?: boolean;
+  googleReason?: string;
+  googleErrorBody?: string;
 }
 
 type GcalResult<T = unknown> = GcalFetchResult<T> | GcalFetchError;
@@ -170,10 +172,23 @@ export async function gcalFetch<T = unknown>(
   // Handle error status codes
   if (!response.ok) {
     if (response.status === 403) {
+      const errorBody = await response.text();
+      // Extract Google's specific error reason for diagnostics
+      let reason = "unknown";
+      let googleMessage = "";
+      try {
+        const parsed = JSON.parse(errorBody);
+        reason = parsed?.error?.errors?.[0]?.reason || "unknown";
+        googleMessage = parsed?.error?.message || "";
+      } catch {
+        // Non-JSON error body
+      }
       return {
         ok: false,
         error: "forbidden",
-        message: "No permission to modify this event (not the organizer?)",
+        message: `No permission (Google reason: ${reason}). ${googleMessage}`.trim(),
+        googleReason: reason,
+        googleErrorBody: errorBody.slice(0, 500),
       };
     }
     if (response.status === 404) {

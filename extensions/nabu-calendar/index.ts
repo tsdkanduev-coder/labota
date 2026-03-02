@@ -1152,9 +1152,28 @@ const nabuCalendarPlugin = {
         return textResult({ error: "summary and startDateTime are required" });
       }
 
+      // Validate startDateTime is a proper ISO 8601 datetime (not "tomorrow" etc.)
+      const startDt = DateTime.fromISO(params.startDateTime);
+      if (!startDt.isValid) {
+        return textResult({
+          error: "invalid_datetime",
+          message: `startDateTime "${params.startDateTime}" is not a valid ISO 8601 datetime. Use format like "2026-03-03T19:00:00+03:00".`,
+        });
+      }
+
+      // Validate endDateTime if provided
+      if (params.endDateTime) {
+        const endDt = DateTime.fromISO(params.endDateTime);
+        if (!endDt.isValid) {
+          return textResult({
+            error: "invalid_datetime",
+            message: `endDateTime "${params.endDateTime}" is not a valid ISO 8601 datetime. Use format like "2026-03-03T20:00:00+03:00".`,
+          });
+        }
+      }
+
       // Default duration: 60 minutes if endDateTime not specified
-      const endDateTime =
-        params.endDateTime || DateTime.fromISO(params.startDateTime).plus({ minutes: 60 }).toISO();
+      const endDateTime = params.endDateTime || startDt.plus({ minutes: 60 }).toISO();
       if (!endDateTime) {
         return textResult({ error: "Invalid startDateTime format" });
       }
