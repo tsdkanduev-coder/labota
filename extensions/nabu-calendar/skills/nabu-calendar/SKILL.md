@@ -24,8 +24,8 @@ One tool, parameter `action`:
 - `record_incident` — log a proactive message for dedup/cooldown: `{ action: "record_incident", incidentId: "...", trigger: "periodic-sync", textSnippet: "..." }`
 - `auth` — connect Google Calendar for write access: `{ action: "auth" }`
 - `search_events` — find events by name/date: `{ action: "search_events", searchQuery: "...", searchDate: "2026-03-03" }`
-- `create_event` — create event (two-step: preview → confirm): `{ action: "create_event", summary: "...", startDateTime: "...", endDateTime: "..." }`
-- `update_event` — update event (two-step): `{ action: "update_event", eventId: "...", summary: "..." }`
+- `create_event` — create event (two-step: preview → confirm): `{ action: "create_event", summary: "...", startDateTime: "...", endDateTime: "...", attendees: ["email@example.com"] }`
+- `update_event` — update event (two-step): `{ action: "update_event", eventId: "...", summary: "...", attendees: ["email@example.com"] }`
 - `delete_event` — delete event (two-step): `{ action: "delete_event", eventId: "..." }`
 - `status` / `disable` — status / disconnect
 
@@ -73,6 +73,18 @@ Check status → `googleCalendarConnected`. If false and user asks to modify cal
 - "Dinner" / "lunch" → 1.5 hours
 - "Meeting" / "call" → 1 hour
 - Show duration in preview: "19:00–20:00 (1 hour)"
+
+### Attendees:
+
+- Pass attendees as an email array: `attendees: ["alice@gmail.com", "bob@company.com"]`
+- Google Calendar sends invitation emails automatically when the event is created or updated
+- For "add X to the meeting" — pass only the NEW email(s). The server auto-merges with existing attendees (add-only in V1.1)
+- For "create event and invite X" — pass all emails
+- If user says "invite Alice" and you know the email from memory/context — use it. If email is unknown — ask the user
+- Show in preview: "Приглашённые: alice@gmail.com, bob@company.com. Существующие гости останутся."
+- Removing individual attendees is not supported yet — tell user to do it manually in Google Calendar
+- IMPORTANT: pass the EXACT same attendees array between preview and confirm (don't reorder or modify)
+- You can also use `place` instead of `eventLocation` — both work
 
 ### Recurring events:
 

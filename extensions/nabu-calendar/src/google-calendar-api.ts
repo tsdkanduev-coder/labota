@@ -266,10 +266,11 @@ export async function createEvent(
     };
   }
 
+  // sendUpdates=all: Google sends invitation emails to attendees (no-op if no attendees)
   return gcalFetch<GoogleCalendarEvent>(
     store,
     chatId,
-    "/calendars/primary/events",
+    "/calendars/primary/events?sendUpdates=all",
     "POST",
     clientId,
     clientSecret,
@@ -288,10 +289,11 @@ export async function updateEvent(
   clientId: string,
   clientSecret: string,
 ): Promise<GcalResult<GoogleCalendarEvent>> {
+  // sendUpdates=all: Google sends notifications on event changes (no-op if no attendees)
   return gcalFetch<GoogleCalendarEvent>(
     store,
     chatId,
-    `/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    `/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
     "PATCH",
     clientId,
     clientSecret,

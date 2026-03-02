@@ -76,6 +76,7 @@ export interface GoogleCalendarEventInput {
   end: { dateTime: string; timeZone?: string };
   location?: string;
   description?: string;
+  attendees?: Array<{ email: string; displayName?: string }>;
   extendedProperties?: {
     private?: Record<string, string>;
   };
@@ -88,6 +89,12 @@ export interface GoogleCalendarEvent {
   end?: { dateTime?: string; date?: string; timeZone?: string };
   location?: string;
   description?: string;
+  attendees?: Array<{
+    email: string;
+    displayName?: string;
+    responseStatus?: string;
+    self?: boolean;
+  }>;
   status?: string;
   htmlLink?: string;
   recurringEventId?: string;

@@ -125,6 +125,13 @@ const NabuCalendarToolSchema = Type.Object({
   eventDescription: Type.Optional(
     Type.String({ description: "Event description (for create/update)" }),
   ),
+  attendees: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        'Email addresses of attendees to invite (for create/update). Example: ["wife@gmail.com"]',
+    }),
+  ),
+  place: Type.Optional(Type.String({ description: "Alias for eventLocation (for create/update)" })),
   eventId: Type.Optional(
     Type.String({ description: "Google Calendar event ID (for update/delete)" }),
   ),
@@ -207,6 +214,15 @@ const nabuCalendarPlugin = {
       if (!oauthStateManager) oauthStateManager = new OAuthStateManager(getStateDir());
       return oauthStateManager;
     };
+
+    // ─── P2: Attendees helpers ──────────────────────────────────
+
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    function canonicalizeAttendees(emails?: string[]): string[] | undefined {
+      if (!emails || emails.length === 0) return undefined;
+      return [...new Set(emails.map((e) => e.trim().toLowerCase()))].sort();
+    }
 
     // ─── P2: HMAC Confirm Token ────────────────────────────────
 
@@ -1090,6 +1106,10 @@ const nabuCalendarPlugin = {
         end: e.end?.dateTime || e.end?.date,
         location: e.location,
         recurringEventId: e.recurringEventId,
+        ...(e.attendees &&
+          e.attendees.length > 0 && {
+            attendees: e.attendees.filter((a) => !a.self).map((a) => a.displayName || a.email),
+          }),
       }));
 
       return textResult({
@@ -1112,6 +1132,8 @@ const nabuCalendarPlugin = {
         endDateTime?: string;
         eventLocation?: string;
         eventDescription?: string;
+        attendees?: string[];
+        place?: string;
         confirmed?: boolean;
         confirmToken?: string;
         idempotencyKey?: string;
@@ -1178,6 +1200,21 @@ const nabuCalendarPlugin = {
         return textResult({ error: "Invalid startDateTime format" });
       }
 
+      // Canonicalize attendees + validate emails
+      const attendees = canonicalizeAttendees(params.attendees);
+      if (attendees) {
+        const invalid = attendees.filter((e) => !EMAIL_RE.test(e));
+        if (invalid.length) {
+          return textResult({
+            error: "invalid_attendee_email",
+            message: `Invalid email(s): ${invalid.join(", ")}. Use valid email addresses.`,
+          });
+        }
+      }
+
+      // Normalize place → eventLocation alias
+      const eventLocation = params.eventLocation || params.place;
+
       if (params.confirmed) {
         // ── Confirmed: execute the write ──
 
@@ -1194,8 +1231,9 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
-          eventLocation: params.eventLocation,
+          eventLocation,
           eventDescription: params.eventDescription,
+          attendees,
           idempotencyKey: params.idempotencyKey,
           exp: params.expiresAt,
         };
@@ -1218,8 +1256,9 @@ const nabuCalendarPlugin = {
             summary: params.summary,
             startDateTime: params.startDateTime,
             endDateTime,
-            eventLocation: params.eventLocation,
+            eventLocation,
             eventDescription: params.eventDescription,
+            attendees,
             idempotencyKey: newIdempotencyKey,
             exp: newExp,
           };
@@ -1231,7 +1270,8 @@ const nabuCalendarPlugin = {
               summary: params.summary,
               startDateTime: params.startDateTime,
               endDateTime,
-              location: params.eventLocation,
+              location: eventLocation,
+              ...(attendees && { attendees }),
             },
             newConfirmToken,
             newIdempotencyKey,
@@ -1254,8 +1294,9 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           start: { dateTime: params.startDateTime },
           end: { dateTime: endDateTime },
-          ...(params.eventLocation && { location: params.eventLocation }),
+          ...(eventLocation && { location: eventLocation }),
           ...(params.eventDescription && { description: params.eventDescription }),
+          ...(attendees && { attendees: attendees.map((email) => ({ email })) }),
         };
 
         const result = await gcalCreateEvent(
@@ -1318,8 +1359,9 @@ const nabuCalendarPlugin = {
         summary: params.summary,
         startDateTime: params.startDateTime,
         endDateTime,
-        eventLocation: params.eventLocation,
+        eventLocation,
         eventDescription: params.eventDescription,
+        attendees,
         idempotencyKey,
         exp,
       };
@@ -1331,8 +1373,9 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
-          location: params.eventLocation,
+          location: eventLocation,
           description: params.eventDescription,
+          ...(attendees && { attendees }),
         },
         confirmToken,
         idempotencyKey,
@@ -1351,6 +1394,8 @@ const nabuCalendarPlugin = {
         endDateTime?: string;
         eventLocation?: string;
         eventDescription?: string;
+        attendees?: string[];
+        place?: string;
         confirmed?: boolean;
         confirmToken?: string;
         idempotencyKey?: string;
@@ -1392,6 +1437,21 @@ const nabuCalendarPlugin = {
         });
       }
 
+      // Canonicalize attendees + validate emails
+      const attendees = canonicalizeAttendees(params.attendees);
+      if (attendees) {
+        const invalid = attendees.filter((e) => !EMAIL_RE.test(e));
+        if (invalid.length) {
+          return textResult({
+            error: "invalid_attendee_email",
+            message: `Invalid email(s): ${invalid.join(", ")}. Use valid email addresses.`,
+          });
+        }
+      }
+
+      // Normalize place → eventLocation alias
+      const eventLocation = params.eventLocation || params.place;
+
       if (params.confirmed) {
         // ── Confirmed: execute the update ──
 
@@ -1401,13 +1461,16 @@ const nabuCalendarPlugin = {
           });
         }
 
-        // Build updates object
+        // Build updates object (attendees already merged in preview, HMAC guarantees integrity)
         const updates: Record<string, unknown> = {};
         if (params.summary) updates.summary = params.summary;
         if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
         if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
-        if (params.eventLocation !== undefined) updates.location = params.eventLocation;
+        if (eventLocation !== undefined) updates.location = eventLocation;
         if (params.eventDescription !== undefined) updates.description = params.eventDescription;
+        if (attendees !== undefined) {
+          updates.attendees = attendees.map((email) => ({ email }));
+        }
 
         const payload = {
           action: "update_event",
@@ -1503,8 +1566,17 @@ const nabuCalendarPlugin = {
       if (params.summary) updates.summary = params.summary;
       if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
       if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
-      if (params.eventLocation !== undefined) updates.location = params.eventLocation;
+      if (eventLocation !== undefined) updates.location = eventLocation;
       if (params.eventDescription !== undefined) updates.description = params.eventDescription;
+
+      // Server-side merge: union existing + new attendees (add-only in V1.1)
+      if (attendees !== undefined) {
+        const existingEmails = (existingEvent.data.attendees || [])
+          .filter((a) => !a.self)
+          .map((a) => a.email.toLowerCase());
+        const merged = [...new Set([...existingEmails, ...attendees])].sort();
+        updates.attendees = merged.map((email) => ({ email }));
+      }
 
       const idempotencyKey = crypto.randomUUID();
       const exp = Date.now() + 10 * 60_000;
@@ -1527,6 +1599,16 @@ const nabuCalendarPlugin = {
             start: existingEvent.data.start?.dateTime || existingEvent.data.start?.date,
             end: existingEvent.data.end?.dateTime || existingEvent.data.end?.date,
             location: existingEvent.data.location,
+            ...(existingEvent.data.attendees &&
+              existingEvent.data.attendees.length > 0 && {
+                attendees: existingEvent.data.attendees
+                  .filter((a) => !a.self)
+                  .map((a) => ({
+                    email: a.email,
+                    ...(a.displayName && { name: a.displayName }),
+                    ...(a.responseStatus && { status: a.responseStatus }),
+                  })),
+              }),
           },
           updates,
         },
