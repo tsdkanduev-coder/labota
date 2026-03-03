@@ -100,6 +100,7 @@
     "telegram": {
       "enabled": true,
       "dmPolicy": "open",
+      "allowFrom": ["*"],
       "groupPolicy": "allowlist",
       "streamMode": "partial",
       "groups": {
