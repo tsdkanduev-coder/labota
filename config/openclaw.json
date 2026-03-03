@@ -161,8 +161,7 @@
             "assistantInstructions": "Ты — ассистент, который прямо сейчас звонит по телефону от имени клиента. Говори по-русски, коротко и естественно, как обычный человек в телефонном разговоре. Поздоровайся, объясни зачем звонишь, слушай собеседника и отвечай по делу."
           },
           "publicUrl": "https://openclaw-1zxd.onrender.com/voice/webhook",
-          // PATCH: 20 → 3 (prevent abuse in multi-user)
-          "maxConcurrentCalls": 3,
+          "maxConcurrentCalls": 20,
           "outbound": {
             "defaultMode": "conversation",
             "notifyHangupDelaySec": 3

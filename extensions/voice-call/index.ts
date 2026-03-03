@@ -255,7 +255,7 @@ const voiceCallPlugin = {
     let runtime: VoiceCallRuntime | null = null;
 
     // ─── Per-user daily call quota ──────────────────────────────
-    const DAILY_CALL_LIMIT = 3;
+    const DAILY_CALL_LIMIT = 30;
     const dailyCallCounts = new Map<string, { date: string; count: number }>();
 
     function checkDailyCallQuota(sessionKey: string | undefined): {
