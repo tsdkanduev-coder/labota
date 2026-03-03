@@ -337,6 +337,7 @@ const voiceCallPlugin = {
             }
             if (calendarUrl) {
               summary += `\n\n[📅 Добавить в календарь](${calendarUrl})`;
+              summary += `\nЕсли хотите, могу сам за вас добавить всё в календарь.`;
             }
             api.logger.info(
               `[voice-call] Sending proactive Telegram message to ${telegramChatId} for call ${call.callId}`,
