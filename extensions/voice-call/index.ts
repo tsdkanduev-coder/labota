@@ -195,9 +195,7 @@ const VoiceCallToolSchema = Type.Union([
     action: Type.Literal("get_call_history"),
     callId: Type.Optional(Type.String({ description: "Filter by call ID or provider call ID" })),
     limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
-    includeAllSessions: Type.Optional(
-      Type.Boolean({ description: "When true, includes calls from all sessions" }),
-    ),
+    // includeAllSessions removed: multi-user security — always scope to current session
   }),
   Type.Object({
     mode: Type.Optional(Type.Union([Type.Literal("call"), Type.Literal("status")])),
@@ -255,6 +253,35 @@ const voiceCallPlugin = {
 
     let runtimePromise: Promise<VoiceCallRuntime> | null = null;
     let runtime: VoiceCallRuntime | null = null;
+
+    // ─── Per-user daily call quota ──────────────────────────────
+    const DAILY_CALL_LIMIT = 3;
+    const dailyCallCounts = new Map<string, { date: string; count: number }>();
+
+    function checkDailyCallQuota(sessionKey: string | undefined): {
+      allowed: boolean;
+      remaining: number;
+    } {
+      if (!sessionKey) return { allowed: true, remaining: DAILY_CALL_LIMIT };
+      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const entry = dailyCallCounts.get(sessionKey);
+      if (!entry || entry.date !== today) {
+        return { allowed: true, remaining: DAILY_CALL_LIMIT };
+      }
+      const remaining = Math.max(0, DAILY_CALL_LIMIT - entry.count);
+      return { allowed: remaining > 0, remaining };
+    }
+
+    function recordCallUsage(sessionKey: string | undefined): void {
+      if (!sessionKey) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const entry = dailyCallCounts.get(sessionKey);
+      if (!entry || entry.date !== today) {
+        dailyCallCounts.set(sessionKey, { date: today, count: 1 });
+      } else {
+        entry.count++;
+      }
+    }
 
     const ensureRuntime = async () => {
       if (!config.enabled) {
@@ -615,6 +642,17 @@ const voiceCallPlugin = {
             if (typeof params?.action === "string") {
               switch (params.action) {
                 case "initiate_call": {
+                  // Per-user daily call quota check
+                  const quota = checkDailyCallQuota(sessionKey);
+                  if (!quota.allowed) {
+                    return json({
+                      error: "daily_call_limit",
+                      message: `Достигнут лимит звонков на сегодня (${DAILY_CALL_LIMIT}). Попробуйте завтра.`,
+                      limit: DAILY_CALL_LIMIT,
+                      remaining: 0,
+                    });
+                  }
+
                   const prompt = String(params.prompt || "").trim();
                   if (!prompt) {
                     throw new Error("prompt required");
@@ -647,7 +685,13 @@ const voiceCallPlugin = {
                   if (!result.success) {
                     throw new Error(result.error || "initiate failed");
                   }
-                  return json({ callId: result.callId, initiated: true });
+                  // Record successful call initiation for quota tracking
+                  recordCallUsage(sessionKey);
+                  return json({
+                    callId: result.callId,
+                    initiated: true,
+                    dailyCallsRemaining: quota.remaining - 1,
+                  });
                 }
                 case "continue_call": {
                   const callId = String(params.callId || "").trim();
@@ -696,13 +740,12 @@ const voiceCallPlugin = {
                 case "get_call_history": {
                   const requestedCallId = String(params.callId || "").trim();
                   const limit = resolveHistoryLimit(params.limit);
-                  const includeAllSessions = params.includeAllSessions === true;
+                  // Security: always scope to current session (multi-user isolation)
                   const raw = await rt.manager.getCallHistory(limit * 6);
                   const snapshots = getLatestCallSnapshots(raw);
-                  const scoped =
-                    includeAllSessions || !sessionKey
-                      ? snapshots
-                      : snapshots.filter((call) => call.sessionKey === sessionKey);
+                  const scoped = sessionKey
+                    ? snapshots.filter((call) => call.sessionKey === sessionKey)
+                    : snapshots;
                   const filtered = requestedCallId
                     ? scoped.filter(
                         (call) =>
@@ -713,8 +756,7 @@ const voiceCallPlugin = {
 
                   return json({
                     count: filtered.length,
-                    scope:
-                      includeAllSessions || !sessionKey ? "all-sessions" : `session:${sessionKey}`,
+                    scope: sessionKey ? `session:${sessionKey}` : "all-sessions",
                     calls: filtered,
                   });
                 }

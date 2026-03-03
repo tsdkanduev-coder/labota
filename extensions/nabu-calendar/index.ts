@@ -75,6 +75,9 @@ const NabuCalendarToolSchema = Type.Object({
       Type.Literal("create_event"),
       Type.Literal("update_event"),
       Type.Literal("delete_event"),
+      // Per-user memory actions (multi-user isolation)
+      Type.Literal("save_note"),
+      Type.Literal("get_notes"),
     ],
     { description: "Action to perform" },
   ),
@@ -153,6 +156,14 @@ const NabuCalendarToolSchema = Type.Object({
   expiresAt: Type.Optional(
     Type.Number({
       description: "Expiration timestamp from preview step (required with confirmed=true)",
+    }),
+  ),
+  // Per-user memory
+  note: Type.Optional(
+    Type.String({
+      description:
+        "A brief observation about the user to remember (for save_note). " +
+        "Examples: schedule preferences, VIP contacts, behavioral patterns.",
     }),
   ),
 });
@@ -434,6 +445,11 @@ const nabuCalendarPlugin = {
                 return await handleUpdateEvent(params, chatId);
               case "delete_event":
                 return await handleDeleteEvent(params, chatId);
+              // Per-user memory actions
+              case "save_note":
+                return handleSaveNote(params, chatId);
+              case "get_notes":
+                return handleGetNotes(chatId);
               default:
                 return textResult({ error: "Unknown action" });
             }
@@ -534,6 +550,8 @@ const nabuCalendarPlugin = {
         googleCalendarConnected: false,
         consentMode: "read_only" as const,
         writeOpsHourCount: 0,
+        // Per-user memory
+        userNotes: [],
       };
 
       s.set(chatId, userConfig);
@@ -659,10 +677,16 @@ const nabuCalendarPlugin = {
             delivery: deliveryTarget,
           }),
         ],
+        cronJobNames: [
+          `nabu-brief-morning-${chatId}`,
+          `nabu-evening-lookahead-${chatId}`,
+          `nabu-sync-periodic-${chatId}`,
+          `nabu-memory-consolidation-${chatId}`,
+        ],
         instruction:
           syncResult.syncStatus === "pending"
-            ? "Calendar connected but initial sync failed. Events will appear on next periodic sync. Create all 4 cron jobs listed above using the cron tool."
-            : "Create all 4 cron jobs listed above using the cron tool. Each item is a complete job object — pass it as the `job` parameter to cron({ action: 'add', job: <item> }).",
+            ? `Calendar connected but initial sync failed. Events will appear on next periodic sync. IMPORTANT: First remove any existing cron jobs with these names (ignore errors if they don't exist): nabu-brief-morning-${chatId}, nabu-evening-lookahead-${chatId}, nabu-sync-periodic-${chatId}, nabu-memory-consolidation-${chatId}. Use cron({ action: "remove", name: "<name>" }) for each. Then create all 4 cron jobs listed above using cron({ action: "add", job: <item> }).`
+            : `IMPORTANT: First remove any existing cron jobs with these names (ignore errors if they don't exist): nabu-brief-morning-${chatId}, nabu-evening-lookahead-${chatId}, nabu-sync-periodic-${chatId}, nabu-memory-consolidation-${chatId}. Use cron({ action: "remove", name: "<name>" }) for each. Then create all 4 cron jobs listed above using cron({ action: "add", job: <item> }). This ensures no duplicate jobs on re-setup.`,
       });
     }
 
@@ -990,6 +1014,58 @@ const nabuCalendarPlugin = {
           ? `Remove these cron jobs using cron({ action: "remove", name: "<name>" }) for each: ${cronJobNames.join(", ")}`
           : undefined,
       });
+    }
+
+    // ─── Per-user Memory Handlers ──────────────────────────────
+
+    const MAX_USER_NOTES = 50;
+
+    function handleSaveNote(params: { note?: string }, chatId: number | null) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+      const note = typeof params.note === "string" ? params.note.trim() : "";
+      if (!note) {
+        return textResult({ error: "note is required for save_note" });
+      }
+      if (note.length > 500) {
+        return textResult({ error: "Note too long (max 500 chars). Be concise." });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+      if (!userConfig) {
+        return textResult({
+          error: "Calendar not set up. Cannot save notes without setup.",
+        });
+      }
+
+      const notes = userConfig.userNotes ?? [];
+      // Dedup: don't add if identical note already exists
+      if (notes.includes(note)) {
+        return textResult({ ok: true, message: "Note already exists.", count: notes.length });
+      }
+      // Cap at MAX_USER_NOTES, dropping oldest
+      const updated = [...notes, note].slice(-MAX_USER_NOTES);
+      s.update(chatId, { userNotes: updated });
+
+      api.logger.info(`[nabu-calendar] Saved note for chat ${chatId} (${updated.length} total)`);
+      return textResult({ ok: true, count: updated.length });
+    }
+
+    function handleGetNotes(chatId: number | null) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+      if (!userConfig) {
+        return textResult({ notes: [], count: 0 });
+      }
+
+      const notes = userConfig.userNotes ?? [];
+      return textResult({ notes, count: notes.length });
     }
 
     // ─── P2: Write-ops Handlers ───────────────────────────────

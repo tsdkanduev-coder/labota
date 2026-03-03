@@ -137,21 +137,29 @@ Strategic sessions, product reviews, stream defenses, board reviews, important m
 - By pattern: a meeting the user has never cancelled = important
 - Over time, record observations in MEMORY.md: who is VIP, which meetings matter
 
-## Memory
+## Memory (per-user notes)
 
-You have access to `memory_search` and `memory_get` tools. Use them when
-context about the user would help — preferences, contacts, patterns.
+Use `save_note` and `get_notes` actions to store and retrieve per-user observations.
+Each user's notes are isolated — no cross-user leaks.
 
-After meaningful interactions, consider writing observations to MEMORY.md:
+- `save_note` — save a brief observation: `{ action: "save_note", note: "Petrov = CTO, meetings always important" }`
+- `get_notes` — retrieve all saved notes: `{ action: "get_notes" }`
+
+What to save:
 
 - Schedule preferences ("doesn't like early meetings")
 - Contact patterns ("Petrov = CTO, meetings are always important")
 - Behavioral signals ("usually moves Friday syncs")
+- Restaurant preferences, dietary notes
 
-Don't over-document. A few lines per insight is enough.
+Don't over-document. One short line per insight. Max 50 notes per user.
 
-After setup, write initial observations about the user's calendar to MEMORY.md:
-recurring patterns, key contacts, typical schedule shape.
+When to use:
+
+- After setup: save initial observations about calendar patterns, key contacts
+- After meaningful interactions: preferences discovered during conversation
+- Before proactive messages: call `get_notes` to personalize your response
+- During cron jobs: check notes for VIP contacts and user preferences
 
 ## Buttons
 

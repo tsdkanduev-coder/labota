@@ -65,6 +65,8 @@ export const NabuUserConfigSchema = z.object({
   consentMode: z.enum(["read_only", "act_with_confirmation"]).default("read_only"),
   writeOpsHourCount: z.number().default(0), // rate limit: writes this hour
   writeOpsHourReset: z.string().optional(), // ISO hour start (reset when hour changes)
+  // Per-user memory: isolated notes (replaces global memory_search for multi-user)
+  userNotes: z.array(z.string()).default([]),
 });
 export type NabuUserConfig = z.infer<typeof NabuUserConfigSchema>;
 

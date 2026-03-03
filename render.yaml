@@ -14,6 +14,8 @@ services:
         sync: false
       - key: OPENCLAW_STATE_DIR
         value: /data/.openclaw
+      - key: OPENCLAW_CONFIG_PATH
+        value: /app/config/openclaw.json
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
     disk:
