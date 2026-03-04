@@ -76,6 +76,13 @@ export interface GoogleCalendarEventInput {
   end: { dateTime: string; timeZone?: string };
   location?: string;
   description?: string;
+  attendees?: Array<{ email: string; displayName?: string }>;
+  conferenceData?: {
+    createRequest?: {
+      requestId: string;
+      conferenceSolutionKey: { type: string };
+    };
+  };
   extendedProperties?: {
     private?: Record<string, string>;
   };
@@ -91,6 +98,15 @@ export interface GoogleCalendarEvent {
   status?: string;
   htmlLink?: string;
   recurringEventId?: string;
+  attendees?: Array<{
+    email?: string;
+    displayName?: string;
+    responseStatus?: string;
+  }>;
+  conferenceData?: {
+    entryPoints?: Array<{ uri?: string; entryPointType?: string }>;
+  };
+  hangoutLink?: string;
   extendedProperties?: {
     private?: Record<string, string>;
   };

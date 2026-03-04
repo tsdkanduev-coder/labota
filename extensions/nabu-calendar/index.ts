@@ -134,11 +134,21 @@ const NabuCalendarToolSchema = Type.Object({
   searchDate: Type.Optional(
     Type.String({ description: "Date to search around, ISO date (for search_events)" }),
   ),
+  attendees: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        'Email addresses of attendees to invite (for create/update). Example: ["wife@gmail.com"]',
+    }),
+  ),
+  place: Type.Optional(Type.String({ description: "Alias for eventLocation (for create/update)" })),
+  addGoogleMeet: Type.Optional(
+    Type.Boolean({ description: "Attach a Google Meet link to the event (for create_event)" }),
+  ),
   confirmed: Type.Optional(Type.Boolean({ description: "Confirm a previewed write operation" })),
   skipPreview: Type.Optional(
     Type.Boolean({
       description:
-        "Skip the preview step and create/update/delete immediately. Use ONLY when the user has already explicitly confirmed intent (e.g. after a voice-call booking).",
+        "Skip the preview step and create immediately. Use ONLY when the user has already explicitly confirmed intent (e.g. after a voice-call booking). Only for create_event.",
     }),
   ),
   confirmToken: Type.Optional(
@@ -232,6 +242,66 @@ const nabuCalendarPlugin = {
         // Malformed token (e.g., non-hex chars slipping through, odd length)
         return false;
       }
+    }
+
+    // ─── Write-ops helpers ─────────────────────────────────────
+
+    function resolveWriteParams(params: {
+      eventLocation?: string;
+      place?: string;
+      attendees?: string[];
+    }): {
+      resolvedLocation: string | undefined;
+      canonicalAttendees: string[];
+      invalidEmails: string[];
+    } {
+      const resolvedLocation = params.eventLocation || params.place || undefined;
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const trimmed = (params.attendees || []).map((e) => e.trim().toLowerCase());
+      const invalidEmails = trimmed.filter((e) => e && !emailRegex.test(e));
+      const canonicalAttendees = [...new Set(trimmed.filter((e) => emailRegex.test(e)))].sort();
+
+      return { resolvedLocation, canonicalAttendees, invalidEmails };
+    }
+
+    function extractMeetLink(
+      event: import("./src/types.js").GoogleCalendarEvent,
+    ): string | undefined {
+      return (
+        event.hangoutLink ||
+        event.conferenceData?.entryPoints?.find((e) => e.entryPointType === "video")?.uri
+      );
+    }
+
+    function buildCreateEventBody(params: {
+      summary: string;
+      startDateTime: string;
+      endDateTime: string;
+      resolvedLocation: string | undefined;
+      eventDescription: string | undefined;
+      canonicalAttendees: string[];
+      addGoogleMeet: boolean;
+      idempotencyKey: string;
+    }) {
+      return {
+        summary: params.summary,
+        start: { dateTime: params.startDateTime },
+        end: { dateTime: params.endDateTime },
+        ...(params.resolvedLocation && { location: params.resolvedLocation }),
+        ...(params.eventDescription && { description: params.eventDescription }),
+        ...(params.canonicalAttendees.length > 0 && {
+          attendees: params.canonicalAttendees.map((e) => ({ email: e })),
+        }),
+        ...(params.addGoogleMeet && {
+          conferenceData: {
+            createRequest: {
+              requestId: params.idempotencyKey,
+              conferenceSolutionKey: { type: "hangoutsMeet" },
+            },
+          },
+        }),
+      };
     }
 
     // ─── P2: Write-ops rate limit ──────────────────────────────
@@ -1123,6 +1193,9 @@ const nabuCalendarPlugin = {
         idempotencyKey?: string;
         expiresAt?: number;
         skipPreview?: boolean;
+        place?: string;
+        attendees?: string[];
+        addGoogleMeet?: boolean;
       },
       chatId: number | null,
     ) {
@@ -1185,7 +1258,18 @@ const nabuCalendarPlugin = {
         return textResult({ error: "Invalid startDateTime format" });
       }
 
-      // ── Skip-preview fast path: generate token internally and execute in one step ──
+      // ── Shared: resolve location, attendees, validate emails ──
+      const { resolvedLocation, canonicalAttendees, invalidEmails } = resolveWriteParams(params);
+      if (invalidEmails.length > 0) {
+        return textResult({
+          error: "invalid_attendee_emails",
+          message: `Invalid email addresses: ${invalidEmails.join(", ")}. Fix and retry.`,
+          invalidEmails,
+        });
+      }
+      const wantMeet = !!params.addGoogleMeet;
+
+      // ── Skip-preview fast path: deterministic key, execute in one step ──
       if (params.skipPreview && !params.confirmed) {
         const rateResult = checkAndIncrementRateLimit(chatId);
         if (!rateResult.ok) {
@@ -1195,15 +1279,35 @@ const nabuCalendarPlugin = {
           });
         }
 
-        const event = {
-          summary: params.summary,
-          start: { dateTime: params.startDateTime },
-          end: { dateTime: endDateTime },
-          ...(params.eventLocation && { location: params.eventLocation }),
-          ...(params.eventDescription && { description: params.eventDescription }),
-        };
+        // Deterministic key from full normalized payload (retry-safe)
+        const idempotencyKey = crypto
+          .createHash("sha256")
+          .update(
+            JSON.stringify({
+              chatId,
+              summary: params.summary,
+              startDateTime: params.startDateTime,
+              endDateTime,
+              location: resolvedLocation,
+              description: params.eventDescription,
+              attendees: canonicalAttendees,
+              addGoogleMeet: wantMeet,
+            }),
+          )
+          .digest("hex")
+          .slice(0, 32);
 
-        const idempotencyKey = crypto.randomUUID();
+        const event = buildCreateEventBody({
+          summary: params.summary,
+          startDateTime: params.startDateTime,
+          endDateTime,
+          resolvedLocation,
+          eventDescription: params.eventDescription,
+          canonicalAttendees,
+          addGoogleMeet: wantMeet,
+          idempotencyKey,
+        });
+
         const result = await gcalCreateEvent(
           s,
           chatId,
@@ -1217,10 +1321,16 @@ const nabuCalendarPlugin = {
           return textResult({ ...result });
         }
 
+        const alreadyExists =
+          "_alreadyExists" in result.data &&
+          (result.data as Record<string, unknown>)._alreadyExists;
+
         return textResult({
           ok: true,
           eventId: result.data.id,
           htmlLink: result.data.htmlLink,
+          meetLink: extractMeetLink(result.data),
+          alreadyExists: !!alreadyExists,
           syncNote:
             "Event created. It may take up to 15 minutes to appear in read mode (ICS feed).",
         });
@@ -1242,8 +1352,10 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
-          eventLocation: params.eventLocation,
+          eventLocation: resolvedLocation,
           eventDescription: params.eventDescription,
+          attendees: canonicalAttendees,
+          addGoogleMeet: wantMeet,
           idempotencyKey: params.idempotencyKey,
           exp: params.expiresAt,
         };
@@ -1257,7 +1369,6 @@ const nabuCalendarPlugin = {
 
         // Check expiration — auto-refresh if expired
         if (Date.now() > params.expiresAt) {
-          // Auto-refresh: generate new preview
           const newIdempotencyKey = crypto.randomUUID();
           const newExp = Date.now() + 10 * 60_000;
           const newPayload = {
@@ -1266,8 +1377,10 @@ const nabuCalendarPlugin = {
             summary: params.summary,
             startDateTime: params.startDateTime,
             endDateTime,
-            eventLocation: params.eventLocation,
+            eventLocation: resolvedLocation,
             eventDescription: params.eventDescription,
+            attendees: canonicalAttendees,
+            addGoogleMeet: wantMeet,
             idempotencyKey: newIdempotencyKey,
             exp: newExp,
           };
@@ -1279,7 +1392,9 @@ const nabuCalendarPlugin = {
               summary: params.summary,
               startDateTime: params.startDateTime,
               endDateTime,
-              location: params.eventLocation,
+              location: resolvedLocation,
+              attendees: canonicalAttendees,
+              addGoogleMeet: wantMeet,
             },
             newConfirmToken,
             newIdempotencyKey,
@@ -1297,14 +1412,16 @@ const nabuCalendarPlugin = {
           });
         }
 
-        // Execute create
-        const event = {
+        const event = buildCreateEventBody({
           summary: params.summary,
-          start: { dateTime: params.startDateTime },
-          end: { dateTime: endDateTime },
-          ...(params.eventLocation && { location: params.eventLocation }),
-          ...(params.eventDescription && { description: params.eventDescription }),
-        };
+          startDateTime: params.startDateTime,
+          endDateTime,
+          resolvedLocation,
+          eventDescription: params.eventDescription,
+          canonicalAttendees,
+          addGoogleMeet: wantMeet,
+          idempotencyKey: params.idempotencyKey,
+        });
 
         const result = await gcalCreateEvent(
           s,
@@ -1327,6 +1444,7 @@ const nabuCalendarPlugin = {
           ok: true,
           eventId: result.data.id,
           htmlLink: result.data.htmlLink,
+          meetLink: extractMeetLink(result.data),
           alreadyExists: !!alreadyExists,
           syncNote:
             "Event created. It may take up to 15 minutes to appear in read mode (ICS feed).",
@@ -1338,16 +1456,16 @@ const nabuCalendarPlugin = {
       // Soft duplicate check
       let duplicateWarning: string | undefined;
       try {
-        const startDt = DateTime.fromISO(params.startDateTime);
-        const endDt = DateTime.fromISO(endDateTime);
+        const searchStartDt = DateTime.fromISO(params.startDateTime);
+        const searchEndDt = DateTime.fromISO(endDateTime);
         const searchResult = await gcalSearchEvents(
           s,
           chatId,
           params.summary,
           GOOGLE_CLIENT_ID,
           GOOGLE_CLIENT_SECRET,
-          startDt.minus({ hours: 1 }).toISO() || undefined,
-          endDt.plus({ hours: 1 }).toISO() || undefined,
+          searchStartDt.minus({ hours: 1 }).toISO() || undefined,
+          searchEndDt.plus({ hours: 1 }).toISO() || undefined,
           3,
         );
         if (searchResult.ok && searchResult.data.length > 0) {
@@ -1366,8 +1484,10 @@ const nabuCalendarPlugin = {
         summary: params.summary,
         startDateTime: params.startDateTime,
         endDateTime,
-        eventLocation: params.eventLocation,
+        eventLocation: resolvedLocation,
         eventDescription: params.eventDescription,
+        attendees: canonicalAttendees,
+        addGoogleMeet: wantMeet,
         idempotencyKey,
         exp,
       };
@@ -1379,8 +1499,10 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
-          location: params.eventLocation,
+          location: resolvedLocation,
           description: params.eventDescription,
+          attendees: canonicalAttendees,
+          addGoogleMeet: wantMeet,
         },
         confirmToken,
         idempotencyKey,
@@ -1403,6 +1525,8 @@ const nabuCalendarPlugin = {
         confirmToken?: string;
         idempotencyKey?: string;
         expiresAt?: number;
+        place?: string;
+        attendees?: string[];
       },
       chatId: number | null,
     ) {
@@ -1440,8 +1564,19 @@ const nabuCalendarPlugin = {
         });
       }
 
+      // ── Shared: resolve location + attendees ──
+      const { resolvedLocation, canonicalAttendees, invalidEmails } = resolveWriteParams(params);
+      if (invalidEmails.length > 0) {
+        return textResult({
+          error: "invalid_attendee_emails",
+          message: `Invalid email addresses: ${invalidEmails.join(", ")}. Fix and retry.`,
+          invalidEmails,
+        });
+      }
+
       if (params.confirmed) {
         // ── Confirmed: execute the update ──
+        // Confirmed path receives merged attendees from preview — just pass through.
 
         if (!params.confirmToken || !params.idempotencyKey || !params.expiresAt) {
           return textResult({
@@ -1454,8 +1589,11 @@ const nabuCalendarPlugin = {
         if (params.summary) updates.summary = params.summary;
         if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
         if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
-        if (params.eventLocation !== undefined) updates.location = params.eventLocation;
+        if (resolvedLocation !== undefined) updates.location = resolvedLocation;
         if (params.eventDescription !== undefined) updates.description = params.eventDescription;
+        if (canonicalAttendees.length > 0) {
+          updates.attendees = canonicalAttendees.map((e) => ({ email: e }));
+        }
 
         const payload = {
           action: "update_event",
@@ -1474,7 +1612,6 @@ const nabuCalendarPlugin = {
         }
 
         if (Date.now() > params.expiresAt) {
-          // Auto-refresh
           const newIdempotencyKey = crypto.randomUUID();
           const newExp = Date.now() + 10 * 60_000;
           const newPayload = { ...payload, idempotencyKey: newIdempotencyKey, exp: newExp };
@@ -1521,7 +1658,7 @@ const nabuCalendarPlugin = {
 
       // ── Preview mode ──
 
-      // Get current event to check for recurring / past-event
+      // Get current event to check for recurring / past-event + existing attendees
       const existingEvent = await gcalGetEvent(
         s,
         chatId,
@@ -1535,13 +1672,11 @@ const nabuCalendarPlugin = {
 
       const warnings: Record<string, string> = {};
 
-      // Recurring event check
       if (existingEvent.data.recurringEventId) {
         warnings.recurringWarning =
           "This is a recurring event. In V1.1, only this single instance can be modified.";
       }
 
-      // Past event check
       const eventEnd = existingEvent.data.end?.dateTime || existingEvent.data.end?.date;
       if (eventEnd && new Date(eventEnd) < new Date()) {
         warnings.pastEventWarning = "This event has already passed.";
@@ -1551,8 +1686,20 @@ const nabuCalendarPlugin = {
       if (params.summary) updates.summary = params.summary;
       if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
       if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
-      if (params.eventLocation !== undefined) updates.location = params.eventLocation;
+      if (resolvedLocation !== undefined) updates.location = resolvedLocation;
       if (params.eventDescription !== undefined) updates.description = params.eventDescription;
+
+      // Add-only attendees merge: existing + new, no removals (V1.1)
+      if (canonicalAttendees.length > 0) {
+        const existing = existingEvent.data.attendees || [];
+        const existingEmails = new Set(existing.map((a) => (a.email || "").toLowerCase()));
+        const newOnly = canonicalAttendees.filter((e) => !existingEmails.has(e));
+        const mergedAttendees = [
+          ...existing.map((a) => ({ email: a.email || "" })),
+          ...newOnly.map((e) => ({ email: e })),
+        ];
+        updates.attendees = mergedAttendees;
+      }
 
       const idempotencyKey = crypto.randomUUID();
       const exp = Date.now() + 10 * 60_000;
@@ -1575,6 +1722,7 @@ const nabuCalendarPlugin = {
             start: existingEvent.data.start?.dateTime || existingEvent.data.start?.date,
             end: existingEvent.data.end?.dateTime || existingEvent.data.end?.date,
             location: existingEvent.data.location,
+            attendees: existingEvent.data.attendees?.map((a) => a.email).filter(Boolean),
           },
           updates,
         },

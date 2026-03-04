@@ -52,9 +52,11 @@ Check status → `googleCalendarConnected`. If false and user asks to modify cal
 4. If `recurringWarning` — tell user only this instance is being changed
 5. If `pastEventWarning` — say "this event has already passed, are you sure?"
 
-### Fast path (`skipPreview`):
+### Fast path (`skipPreview`) — only for `create_event`:
 
 When the user has **already explicitly confirmed intent** — use `skipPreview: true` to create the event in one step, without the preview→confirm round-trip.
+
+`skipPreview` is **only supported for `create_event`**. For `update_event` and `delete_event`, always use the standard preview→confirm flow.
 
 Allowed scenarios for `skipPreview`:
 
@@ -75,11 +77,26 @@ Example:
 
 ### Rules:
 
-- NEVER call create/update/delete with confirmed=true without explicit user confirmation
-- ALWAYS pass confirmToken, idempotencyKey AND expiresAt from the preview response
-- Use `skipPreview: true` when user intent is already clear (see above) — avoids double-asking
+- По умолчанию при create/update/delete — сначала вызови БЕЗ `confirmed`,
+  покажи пользователю preview, дождись подтверждения, затем вызови
+  С `confirmed=true` + `confirmToken` + `idempotencyKey` + `expiresAt`.
+- Исключение — `skipPreview: true` (только для `create_event`):
+  используй когда пользователь уже явно подтвердил намерение и все детали
+  известны (после звонка, после прямой команды "запиши", "добавь").
+  С `skipPreview` НЕ передавай confirmed/confirmToken/idempotencyKey/expiresAt.
+- Если не уверен — используй preview. Лучше лишний раз спросить, чем создать
+  не то событие.
 - After a voice-call booking — suggest adding it to the calendar
-- After successful creation: "Added to calendar ✓" + syncNote (delay up to 15 min in read mode)
+- After successful creation: "Добавил в календарь ✓" + syncNote + meetLink (if present)
+
+### Google Meet:
+
+- `addGoogleMeet: true` — добавляет ссылку на Google Meet к событию.
+- Ставь `true` для онлайн-встреч: созвон, sync, 1:1, interview, meeting.
+- Ставь `false` (или не передавай) для офлайн-событий: ресторан, врач,
+  просмотр квартиры, напоминание.
+- По умолчанию: `false`. Meet — только когда контекст явно онлайн.
+- После создания — покажи ссылку на Meet пользователю.
 
 ### Vague time — suggest a specific one:
 
