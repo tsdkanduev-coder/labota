@@ -163,10 +163,10 @@ const VoiceCallToolSchema = Type.Union([
     to: Type.Optional(Type.String({ description: "Call target" })),
     prompt: Type.String({
       description:
-        "Task for the voice call in one sentence in Russian. " +
-        "MUST include three mandatory details: (1) guest name, (2) date/time, (3) number of guests. " +
-        "If any of these are missing from the user's message, ask the user BEFORE calling — do NOT call without them. " +
-        "Example: 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'. " +
+        "Task for the voice call in 1-2 sentences in Russian. " +
+        "Describe what needs to be done in the call. " +
+        "For restaurant bookings, include: guest name, date/time, number of guests. " +
+        "For other calls (inquiries, questions, etc.) — describe the task clearly. " +
         "Do NOT add behavioral instructions or role descriptions — just the task.",
     }),
     message: Type.Optional(Type.String({ description: "Fallback intro text (for notify mode)" })),
@@ -624,11 +624,10 @@ const voiceCallPlugin = {
         label: "Voice Call",
         description:
           "Make phone calls via voice-call plugin. " +
-          "For initiate_call, `prompt` MUST contain the task with three required details: " +
-          "guest name, date/time, and number of guests. " +
-          "If any detail is missing, ask the user first — never call without all three. " +
-          "Example: 'Забронировать столик на имя Елена, завтра 20:00, 4 гостя'. " +
-          "Do NOT add role or behavioral instructions — just the task.",
+          "For initiate_call, `prompt` describes the task for the call. " +
+          "For restaurant bookings, try to include guest name, date/time, number of guests — but if the user " +
+          "wants to call for any other reason (ask a question, inquire about something, etc.), that's fine too. " +
+          "Do NOT add role or behavioral instructions to the prompt — just the task.",
         parameters: VoiceCallToolSchema,
         async execute(_toolCallId, params) {
           const json = (payload: unknown) => ({
@@ -913,21 +912,21 @@ async function generateLlmSummary(
     "",
     "Поле summary — текст отчёта для клиента в Telegram:",
     "— Деловой, уважительный, тёплый тон. Никаких смайликов.",
-    "— От первого лица множественного числа («мы уточнили», «мы забронировали»).",
+    "— От первого лица единственного числа («я уточнил», «забронировал»). НЕ «мы».",
     "",
     "Структура (адаптируй под ситуацию, не все блоки обязательны):",
     "1. Итог: что удалось/не удалось (одно-два предложения).",
     "2. Детали: дата, время, количество персон, имя брони, зал/размещение, условия (депозит, меню, ограничения и т.д.) — всё что удалось выяснить из разговора. Оформи списком через «—». Не упоминай пункт, если информации нет в транскрипте.",
     "3. Если собеседник сообщил дополнительную информацию (условия, ограничения, альтернативы) — укажи.",
     "4. Следующий шаг: что клиенту нужно сделать дальше.",
-    "Завершай: «Остаёмся в вашем распоряжении по любым вопросам.»",
+    "Завершай: «Если нужна помощь — обращайтесь.»",
     "",
     "ВАЖНО: поле summary должно быть самодостаточным и подробным — клиент видит ТОЛЬКО его. Не сокращай summary из-за наличия поля booking.",
     "Не выдумывай информацию — используй только факты из транскрипта.",
     "",
     "ФОРМАТИРОВАНИЕ: используй \\n для переносов строк в поле summary. Каждый пункт списка должен начинаться с новой строки.",
     "Пример правильного summary:",
-    '"Мы успешно забронировали столик в ресторане Christian.\\n\\nПодробности бронирования:\\n— Дата: 2026-02-25\\n— Время: 20:00\\n— Количество персон: 2\\n— Имя брони: Алекс\\n— Зал: любой удобный\\n\\nОстаёмся в вашем распоряжении по любым вопросам."',
+    '"Успешно забронировал столик в ресторане Christian.\\n\\nПодробности бронирования:\\n— Дата: 2026-02-25\\n— Время: 20:00\\n— Количество персон: 2\\n— Имя брони: Алекс\\n— Зал: любой удобный\\n\\nЕсли нужна помощь — обращайтесь."',
     "",
     "Поле booking — структурированные данные бронирования (или null если бронь не состоялась):",
     '{ "confirmed": true/false, "restaurant": "название", "date": "YYYY-MM-DD", "time": "HH:MM",',
