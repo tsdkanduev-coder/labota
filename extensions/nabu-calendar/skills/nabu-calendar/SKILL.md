@@ -52,10 +52,32 @@ Check status → `googleCalendarConnected`. If false and user asks to modify cal
 4. If `recurringWarning` — tell user only this instance is being changed
 5. If `pastEventWarning` — say "this event has already passed, are you sure?"
 
+### Fast path (`skipPreview`):
+
+When the user has **already explicitly confirmed intent** — use `skipPreview: true` to create the event in one step, without the preview→confirm round-trip.
+
+Allowed scenarios for `skipPreview`:
+
+- After a voice-call booking, when the user says "добавь в календарь" / "запиши" / "да" / any clear confirmation
+- When the user gives a direct, unambiguous instruction to create an event with all details already known
+
+Do NOT use `skipPreview` when:
+
+- Details are vague and need clarification
+- There's a risk of duplicate (better to let preview catch it)
+- User hasn't explicitly asked to create the event
+
+Example:
+
+```json
+{ "action": "create_event", "summary": "...", "startDateTime": "...", "skipPreview": true }
+```
+
 ### Rules:
 
 - NEVER call create/update/delete with confirmed=true without explicit user confirmation
 - ALWAYS pass confirmToken, idempotencyKey AND expiresAt from the preview response
+- Use `skipPreview: true` when user intent is already clear (see above) — avoids double-asking
 - After a voice-call booking — suggest adding it to the calendar
 - After successful creation: "Added to calendar ✓" + syncNote (delay up to 15 min in read mode)
 

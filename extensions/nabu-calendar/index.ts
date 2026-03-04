@@ -135,6 +135,12 @@ const NabuCalendarToolSchema = Type.Object({
     Type.String({ description: "Date to search around, ISO date (for search_events)" }),
   ),
   confirmed: Type.Optional(Type.Boolean({ description: "Confirm a previewed write operation" })),
+  skipPreview: Type.Optional(
+    Type.Boolean({
+      description:
+        "Skip the preview step and create/update/delete immediately. Use ONLY when the user has already explicitly confirmed intent (e.g. after a voice-call booking).",
+    }),
+  ),
   confirmToken: Type.Optional(
     Type.String({ description: "HMAC token from preview step (required with confirmed=true)" }),
   ),
@@ -1116,6 +1122,7 @@ const nabuCalendarPlugin = {
         confirmToken?: string;
         idempotencyKey?: string;
         expiresAt?: number;
+        skipPreview?: boolean;
       },
       chatId: number | null,
     ) {
@@ -1176,6 +1183,47 @@ const nabuCalendarPlugin = {
       const endDateTime = params.endDateTime || startDt.plus({ minutes: 60 }).toISO();
       if (!endDateTime) {
         return textResult({ error: "Invalid startDateTime format" });
+      }
+
+      // ── Skip-preview fast path: generate token internally and execute in one step ──
+      if (params.skipPreview && !params.confirmed) {
+        const rateResult = checkAndIncrementRateLimit(chatId);
+        if (!rateResult.ok) {
+          return textResult({
+            error: "rate_limit",
+            message: "Too many write operations this hour. Try again later.",
+          });
+        }
+
+        const event = {
+          summary: params.summary,
+          start: { dateTime: params.startDateTime },
+          end: { dateTime: endDateTime },
+          ...(params.eventLocation && { location: params.eventLocation }),
+          ...(params.eventDescription && { description: params.eventDescription }),
+        };
+
+        const idempotencyKey = crypto.randomUUID();
+        const result = await gcalCreateEvent(
+          s,
+          chatId,
+          event,
+          GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET,
+          idempotencyKey,
+        );
+
+        if (!result.ok) {
+          return textResult({ ...result });
+        }
+
+        return textResult({
+          ok: true,
+          eventId: result.data.id,
+          htmlLink: result.data.htmlLink,
+          syncNote:
+            "Event created. It may take up to 15 minutes to appear in read mode (ICS feed).",
+        });
       }
 
       if (params.confirmed) {
