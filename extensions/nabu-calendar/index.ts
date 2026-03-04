@@ -75,9 +75,6 @@ const NabuCalendarToolSchema = Type.Object({
       Type.Literal("create_event"),
       Type.Literal("update_event"),
       Type.Literal("delete_event"),
-      // Per-user memory actions (multi-user isolation)
-      Type.Literal("save_note"),
-      Type.Literal("get_notes"),
     ],
     { description: "Action to perform" },
   ),
@@ -128,13 +125,6 @@ const NabuCalendarToolSchema = Type.Object({
   eventDescription: Type.Optional(
     Type.String({ description: "Event description (for create/update)" }),
   ),
-  attendees: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        'Email addresses of attendees to invite (for create/update). Example: ["wife@gmail.com"]',
-    }),
-  ),
-  place: Type.Optional(Type.String({ description: "Alias for eventLocation (for create/update)" })),
   eventId: Type.Optional(
     Type.String({ description: "Google Calendar event ID (for update/delete)" }),
   ),
@@ -145,6 +135,12 @@ const NabuCalendarToolSchema = Type.Object({
     Type.String({ description: "Date to search around, ISO date (for search_events)" }),
   ),
   confirmed: Type.Optional(Type.Boolean({ description: "Confirm a previewed write operation" })),
+  skipPreview: Type.Optional(
+    Type.Boolean({
+      description:
+        "Skip the preview step and create/update/delete immediately. Use ONLY when the user has already explicitly confirmed intent (e.g. after a voice-call booking).",
+    }),
+  ),
   confirmToken: Type.Optional(
     Type.String({ description: "HMAC token from preview step (required with confirmed=true)" }),
   ),
@@ -156,14 +152,6 @@ const NabuCalendarToolSchema = Type.Object({
   expiresAt: Type.Optional(
     Type.Number({
       description: "Expiration timestamp from preview step (required with confirmed=true)",
-    }),
-  ),
-  // Per-user memory
-  note: Type.Optional(
-    Type.String({
-      description:
-        "A brief observation about the user to remember (for save_note). " +
-        "Examples: schedule preferences, VIP contacts, behavioral patterns.",
     }),
   ),
 });
@@ -225,15 +213,6 @@ const nabuCalendarPlugin = {
       if (!oauthStateManager) oauthStateManager = new OAuthStateManager(getStateDir());
       return oauthStateManager;
     };
-
-    // ─── P2: Attendees helpers ──────────────────────────────────
-
-    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    function canonicalizeAttendees(emails?: string[]): string[] | undefined {
-      if (!emails || emails.length === 0) return undefined;
-      return [...new Set(emails.map((e) => e.trim().toLowerCase()))].sort();
-    }
 
     // ─── P2: HMAC Confirm Token ────────────────────────────────
 
@@ -445,11 +424,6 @@ const nabuCalendarPlugin = {
                 return await handleUpdateEvent(params, chatId);
               case "delete_event":
                 return await handleDeleteEvent(params, chatId);
-              // Per-user memory actions
-              case "save_note":
-                return handleSaveNote(params, chatId);
-              case "get_notes":
-                return handleGetNotes(chatId);
               default:
                 return textResult({ error: "Unknown action" });
             }
@@ -550,8 +524,6 @@ const nabuCalendarPlugin = {
         googleCalendarConnected: false,
         consentMode: "read_only" as const,
         writeOpsHourCount: 0,
-        // Per-user memory
-        userNotes: [],
       };
 
       s.set(chatId, userConfig);
@@ -677,16 +649,10 @@ const nabuCalendarPlugin = {
             delivery: deliveryTarget,
           }),
         ],
-        cronJobNames: [
-          `nabu-brief-morning-${chatId}`,
-          `nabu-evening-lookahead-${chatId}`,
-          `nabu-sync-periodic-${chatId}`,
-          `nabu-memory-consolidation-${chatId}`,
-        ],
         instruction:
           syncResult.syncStatus === "pending"
-            ? `Calendar connected but initial sync failed. Events will appear on next periodic sync. IMPORTANT: First remove any existing cron jobs with these names (ignore errors if they don't exist): nabu-brief-morning-${chatId}, nabu-evening-lookahead-${chatId}, nabu-sync-periodic-${chatId}, nabu-memory-consolidation-${chatId}. Use cron({ action: "remove", name: "<name>" }) for each. Then create all 4 cron jobs listed above using cron({ action: "add", job: <item> }).`
-            : `IMPORTANT: First remove any existing cron jobs with these names (ignore errors if they don't exist): nabu-brief-morning-${chatId}, nabu-evening-lookahead-${chatId}, nabu-sync-periodic-${chatId}, nabu-memory-consolidation-${chatId}. Use cron({ action: "remove", name: "<name>" }) for each. Then create all 4 cron jobs listed above using cron({ action: "add", job: <item> }). This ensures no duplicate jobs on re-setup.`,
+            ? "Calendar connected but initial sync failed. Events will appear on next periodic sync. Create all 4 cron jobs listed above using the cron tool."
+            : "Create all 4 cron jobs listed above using the cron tool. Each item is a complete job object — pass it as the `job` parameter to cron({ action: 'add', job: <item> }).",
       });
     }
 
@@ -1016,58 +982,6 @@ const nabuCalendarPlugin = {
       });
     }
 
-    // ─── Per-user Memory Handlers ──────────────────────────────
-
-    const MAX_USER_NOTES = 50;
-
-    function handleSaveNote(params: { note?: string }, chatId: number | null) {
-      if (!chatId) {
-        return textResult({ error: "Cannot determine chat ID" });
-      }
-      const note = typeof params.note === "string" ? params.note.trim() : "";
-      if (!note) {
-        return textResult({ error: "note is required for save_note" });
-      }
-      if (note.length > 500) {
-        return textResult({ error: "Note too long (max 500 chars). Be concise." });
-      }
-
-      const s = ensureStore();
-      const userConfig = s.get(chatId);
-      if (!userConfig) {
-        return textResult({
-          error: "Calendar not set up. Cannot save notes without setup.",
-        });
-      }
-
-      const notes = userConfig.userNotes ?? [];
-      // Dedup: don't add if identical note already exists
-      if (notes.includes(note)) {
-        return textResult({ ok: true, message: "Note already exists.", count: notes.length });
-      }
-      // Cap at MAX_USER_NOTES, dropping oldest
-      const updated = [...notes, note].slice(-MAX_USER_NOTES);
-      s.update(chatId, { userNotes: updated });
-
-      api.logger.info(`[nabu-calendar] Saved note for chat ${chatId} (${updated.length} total)`);
-      return textResult({ ok: true, count: updated.length });
-    }
-
-    function handleGetNotes(chatId: number | null) {
-      if (!chatId) {
-        return textResult({ error: "Cannot determine chat ID" });
-      }
-
-      const s = ensureStore();
-      const userConfig = s.get(chatId);
-      if (!userConfig) {
-        return textResult({ notes: [], count: 0 });
-      }
-
-      const notes = userConfig.userNotes ?? [];
-      return textResult({ notes, count: notes.length });
-    }
-
     // ─── P2: Write-ops Handlers ───────────────────────────────
 
     async function handleAuth(chatId: number | null) {
@@ -1182,10 +1096,6 @@ const nabuCalendarPlugin = {
         end: e.end?.dateTime || e.end?.date,
         location: e.location,
         recurringEventId: e.recurringEventId,
-        ...(e.attendees &&
-          e.attendees.length > 0 && {
-            attendees: e.attendees.filter((a) => !a.self).map((a) => a.displayName || a.email),
-          }),
       }));
 
       return textResult({
@@ -1208,12 +1118,11 @@ const nabuCalendarPlugin = {
         endDateTime?: string;
         eventLocation?: string;
         eventDescription?: string;
-        attendees?: string[];
-        place?: string;
         confirmed?: boolean;
         confirmToken?: string;
         idempotencyKey?: string;
         expiresAt?: number;
+        skipPreview?: boolean;
       },
       chatId: number | null,
     ) {
@@ -1276,20 +1185,46 @@ const nabuCalendarPlugin = {
         return textResult({ error: "Invalid startDateTime format" });
       }
 
-      // Canonicalize attendees + validate emails
-      const attendees = canonicalizeAttendees(params.attendees);
-      if (attendees) {
-        const invalid = attendees.filter((e) => !EMAIL_RE.test(e));
-        if (invalid.length) {
+      // ── Skip-preview fast path: generate token internally and execute in one step ──
+      if (params.skipPreview && !params.confirmed) {
+        const rateResult = checkAndIncrementRateLimit(chatId);
+        if (!rateResult.ok) {
           return textResult({
-            error: "invalid_attendee_email",
-            message: `Invalid email(s): ${invalid.join(", ")}. Use valid email addresses.`,
+            error: "rate_limit",
+            message: "Too many write operations this hour. Try again later.",
           });
         }
-      }
 
-      // Normalize place → eventLocation alias
-      const eventLocation = params.eventLocation || params.place;
+        const event = {
+          summary: params.summary,
+          start: { dateTime: params.startDateTime },
+          end: { dateTime: endDateTime },
+          ...(params.eventLocation && { location: params.eventLocation }),
+          ...(params.eventDescription && { description: params.eventDescription }),
+        };
+
+        const idempotencyKey = crypto.randomUUID();
+        const result = await gcalCreateEvent(
+          s,
+          chatId,
+          event,
+          GOOGLE_CLIENT_ID,
+          GOOGLE_CLIENT_SECRET,
+          idempotencyKey,
+        );
+
+        if (!result.ok) {
+          return textResult({ ...result });
+        }
+
+        return textResult({
+          ok: true,
+          eventId: result.data.id,
+          htmlLink: result.data.htmlLink,
+          syncNote:
+            "Event created. It may take up to 15 minutes to appear in read mode (ICS feed).",
+        });
+      }
 
       if (params.confirmed) {
         // ── Confirmed: execute the write ──
@@ -1307,9 +1242,8 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
-          eventLocation,
+          eventLocation: params.eventLocation,
           eventDescription: params.eventDescription,
-          attendees,
           idempotencyKey: params.idempotencyKey,
           exp: params.expiresAt,
         };
@@ -1332,9 +1266,8 @@ const nabuCalendarPlugin = {
             summary: params.summary,
             startDateTime: params.startDateTime,
             endDateTime,
-            eventLocation,
+            eventLocation: params.eventLocation,
             eventDescription: params.eventDescription,
-            attendees,
             idempotencyKey: newIdempotencyKey,
             exp: newExp,
           };
@@ -1346,8 +1279,7 @@ const nabuCalendarPlugin = {
               summary: params.summary,
               startDateTime: params.startDateTime,
               endDateTime,
-              location: eventLocation,
-              ...(attendees && { attendees }),
+              location: params.eventLocation,
             },
             newConfirmToken,
             newIdempotencyKey,
@@ -1370,9 +1302,8 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           start: { dateTime: params.startDateTime },
           end: { dateTime: endDateTime },
-          ...(eventLocation && { location: eventLocation }),
+          ...(params.eventLocation && { location: params.eventLocation }),
           ...(params.eventDescription && { description: params.eventDescription }),
-          ...(attendees && { attendees: attendees.map((email) => ({ email })) }),
         };
 
         const result = await gcalCreateEvent(
@@ -1435,9 +1366,8 @@ const nabuCalendarPlugin = {
         summary: params.summary,
         startDateTime: params.startDateTime,
         endDateTime,
-        eventLocation,
+        eventLocation: params.eventLocation,
         eventDescription: params.eventDescription,
-        attendees,
         idempotencyKey,
         exp,
       };
@@ -1449,9 +1379,8 @@ const nabuCalendarPlugin = {
           summary: params.summary,
           startDateTime: params.startDateTime,
           endDateTime,
-          location: eventLocation,
+          location: params.eventLocation,
           description: params.eventDescription,
-          ...(attendees && { attendees }),
         },
         confirmToken,
         idempotencyKey,
@@ -1470,8 +1399,6 @@ const nabuCalendarPlugin = {
         endDateTime?: string;
         eventLocation?: string;
         eventDescription?: string;
-        attendees?: string[];
-        place?: string;
         confirmed?: boolean;
         confirmToken?: string;
         idempotencyKey?: string;
@@ -1513,21 +1440,6 @@ const nabuCalendarPlugin = {
         });
       }
 
-      // Canonicalize attendees + validate emails
-      const attendees = canonicalizeAttendees(params.attendees);
-      if (attendees) {
-        const invalid = attendees.filter((e) => !EMAIL_RE.test(e));
-        if (invalid.length) {
-          return textResult({
-            error: "invalid_attendee_email",
-            message: `Invalid email(s): ${invalid.join(", ")}. Use valid email addresses.`,
-          });
-        }
-      }
-
-      // Normalize place → eventLocation alias
-      const eventLocation = params.eventLocation || params.place;
-
       if (params.confirmed) {
         // ── Confirmed: execute the update ──
 
@@ -1537,16 +1449,13 @@ const nabuCalendarPlugin = {
           });
         }
 
-        // Build updates object (attendees already merged in preview, HMAC guarantees integrity)
+        // Build updates object
         const updates: Record<string, unknown> = {};
         if (params.summary) updates.summary = params.summary;
         if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
         if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
-        if (eventLocation !== undefined) updates.location = eventLocation;
+        if (params.eventLocation !== undefined) updates.location = params.eventLocation;
         if (params.eventDescription !== undefined) updates.description = params.eventDescription;
-        if (attendees !== undefined) {
-          updates.attendees = attendees.map((email) => ({ email }));
-        }
 
         const payload = {
           action: "update_event",
@@ -1642,17 +1551,8 @@ const nabuCalendarPlugin = {
       if (params.summary) updates.summary = params.summary;
       if (params.startDateTime) updates.start = { dateTime: params.startDateTime };
       if (params.endDateTime) updates.end = { dateTime: params.endDateTime };
-      if (eventLocation !== undefined) updates.location = eventLocation;
+      if (params.eventLocation !== undefined) updates.location = params.eventLocation;
       if (params.eventDescription !== undefined) updates.description = params.eventDescription;
-
-      // Server-side merge: union existing + new attendees (add-only in V1.1)
-      if (attendees !== undefined) {
-        const existingEmails = (existingEvent.data.attendees || [])
-          .filter((a) => !a.self)
-          .map((a) => a.email.toLowerCase());
-        const merged = [...new Set([...existingEmails, ...attendees])].sort();
-        updates.attendees = merged.map((email) => ({ email }));
-      }
 
       const idempotencyKey = crypto.randomUUID();
       const exp = Date.now() + 10 * 60_000;
@@ -1675,16 +1575,6 @@ const nabuCalendarPlugin = {
             start: existingEvent.data.start?.dateTime || existingEvent.data.start?.date,
             end: existingEvent.data.end?.dateTime || existingEvent.data.end?.date,
             location: existingEvent.data.location,
-            ...(existingEvent.data.attendees &&
-              existingEvent.data.attendees.length > 0 && {
-                attendees: existingEvent.data.attendees
-                  .filter((a) => !a.self)
-                  .map((a) => ({
-                    email: a.email,
-                    ...(a.displayName && { name: a.displayName }),
-                    ...(a.responseStatus && { status: a.responseStatus }),
-                  })),
-              }),
           },
           updates,
         },
