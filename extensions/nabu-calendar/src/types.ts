@@ -65,8 +65,6 @@ export const NabuUserConfigSchema = z.object({
   consentMode: z.enum(["read_only", "act_with_confirmation"]).default("read_only"),
   writeOpsHourCount: z.number().default(0), // rate limit: writes this hour
   writeOpsHourReset: z.string().optional(), // ISO hour start (reset when hour changes)
-  // Per-user memory: isolated notes (replaces global memory_search for multi-user)
-  userNotes: z.array(z.string()).default([]),
 });
 export type NabuUserConfig = z.infer<typeof NabuUserConfigSchema>;
 
@@ -79,6 +77,12 @@ export interface GoogleCalendarEventInput {
   location?: string;
   description?: string;
   attendees?: Array<{ email: string; displayName?: string }>;
+  conferenceData?: {
+    createRequest?: {
+      requestId: string;
+      conferenceSolutionKey: { type: string };
+    };
+  };
   extendedProperties?: {
     private?: Record<string, string>;
   };
@@ -91,15 +95,18 @@ export interface GoogleCalendarEvent {
   end?: { dateTime?: string; date?: string; timeZone?: string };
   location?: string;
   description?: string;
-  attendees?: Array<{
-    email: string;
-    displayName?: string;
-    responseStatus?: string;
-    self?: boolean;
-  }>;
   status?: string;
   htmlLink?: string;
   recurringEventId?: string;
+  attendees?: Array<{
+    email?: string;
+    displayName?: string;
+    responseStatus?: string;
+  }>;
+  conferenceData?: {
+    entryPoints?: Array<{ uri?: string; entryPointType?: string }>;
+  };
+  hangoutLink?: string;
   extendedProperties?: {
     private?: Record<string, string>;
   };

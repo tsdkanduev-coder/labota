@@ -267,10 +267,11 @@ export async function createEvent(
   }
 
   // sendUpdates=all: Google sends invitation emails to attendees (no-op if no attendees)
+  // conferenceDataVersion=1: enables Google Meet link creation via conferenceData
   return gcalFetch<GoogleCalendarEvent>(
     store,
     chatId,
-    "/calendars/primary/events?sendUpdates=all",
+    "/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1",
     "POST",
     clientId,
     clientSecret,
