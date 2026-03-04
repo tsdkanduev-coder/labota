@@ -9,13 +9,13 @@
 
 **Nabu** — персональный консьерж-ассистент в Telegram на платформе OpenClaw.
 
-| Направление               | Статус               | Ключевые файлы                             |
-| ------------------------- | -------------------- | ------------------------------------------ |
-| **Voice-call** (звонки)   | Прод, Voximplant     | `extensions/voice-call/`                   |
-| **Calendar** (расписание) | Прод, read-only MVP  | `extensions/nabu-calendar/`                |
-| **Bot persona** (SOUL)    | Прод                 | `workspace/SOUL.md`                        |
-| **iOS app**               | Scaffold, не в проде | `apps/LabotaCalendarPreview/`, `apps/ios/` |
-| **Android/macOS**         | Scaffold             | `apps/android/`, `apps/macos/`             |
+| Направление               | Статус                                         | Ключевые файлы                             |
+| ------------------------- | ---------------------------------------------- | ------------------------------------------ |
+| **Voice-call** (звонки)   | Прод, Voximplant                               | `extensions/voice-call/`                   |
+| **Calendar** (расписание) | Прод, read-write (Google OAuth + Yandex OAuth) | `extensions/nabu-calendar/`                |
+| **Bot persona** (SOUL)    | Прод                                           | `workspace/SOUL.md`                        |
+| **iOS app**               | Scaffold, не в проде                           | `apps/LabotaCalendarPreview/`, `apps/ios/` |
+| **Android/macOS**         | Scaffold                                       | `apps/android/`, `apps/macos/`             |
 
 ---
 
@@ -175,6 +175,47 @@ t=20s+  Callee отвечает "да" (на сам вопрос бота) → �
 
 5. **Wrong tool name** — `calendar_fetch` → `nabu_calendar(action="fetch")` в callback plan instruction.
 
+### Фаза 5: Yandex Calendar OAuth (5 марта)
+
+- `a4b977fe8` — Yandex Calendar OAuth flow + schema (PR-1, merged to main)
+- OAuth 2.0 + PKCE, callback handler, token storage в per-user store
+- Schema: `activeWriteProvider` field ("google" | "yandex"), dual provider support
+- `yandex-auth.ts`: buildAuthUrl, exchangeCode, refreshToken, revokeToken
+- 13 тестов для Yandex auth flow
+- **CRUD пока только Google** — Yandex CalDAV write ops = следующий шаг (PR-2)
+
+### Фаза 6: SKILL.md v2 — дистилляция логики анализа (5 марта)
+
+- `a371c2312` — Полная переработка SKILL.md (merged to main)
+- Источник: `NABU_TIER_SYSTEM.md` (1230 строк, спека для нативного приложения)
+- Весь файл переведён на русский (~380 строк, было 258 mixed RU/EN)
+
+**Новые секции проактивного анализа:**
+
+1. **Оценка важности событий** — 3 уровня сигналов: dominant (VIP, внешние, hard constraints), strong (организатор, confirmed, one-off), weak (количество участников, ключевые слова). Data availability guard: нет данных ≠ низкая важность.
+
+2. **VIP-детекция** — минимум 2 сигнала для VIP-статуса. Сигналы: по названию (1:1 + review, Board), по email (ceo@, cto@), по паттерну встреч. Memory: гипотеза после 3-й встречи.
+
+3. **Типы инцидентов** — 5 типов: overlap, prep_risk, commute_risk, overload, external_change. Commute risk с подробной логикой буфера между оффлайн-встречами.
+
+4. **Фреймворк решений** — actionability gate (писать ТОЛЬКО если есть конкретное действие). Что можно убрать (recurring sync, optional), что нельзя трогать (VIP, внешние, hard constraint, оффлайн в ближайшие 2 часа).
+
+5. **Day-level reasoning** — таблица реакций по ситуациям (1 инцидент → коротко, 3+ → комплексный план, 8-11 без конфликтов → NO_REPLY).
+
+6. **Расширенный NO_REPLY** — конкретные примеры когда молчать (standup сдвинулся на 15 мин, описание обновилось, all-day FYI, два LOW пересекаются).
+
+**Точечные фиксы из Codex-ревью:**
+
+- Dual provider: при двух провайдерах — спроси у пользователя
+- Confirm same provider: подтверждение в том же провайдере что и preview
+- search_events для eventId: никогда не конструируй ID вручную
+- htmlLink + meetLink: показывай оба после создания
+- Recurring fallback: если series не поддерживается — предложи instance
+- Тон: до 8 строк для плана оптимизации (было жёсткое 2-4)
+- Юмор: только если пользователь неформальный
+- Memory: 1-3 наблюдения, не спамить
+- NO_REPLY: ровно строка `NO_REPLY` без дополнительного текста
+
 ### Архитектурное решение: проактивность LLM vs алгоритмы
 
 **Проблема:** Вся anti-spam логика (dedup, cooldown, daily cap) работает через LLM-дисциплину. LLM видит данные ledger в ответе fetch, но нет hard gate — может проигнорировать, забыть вызвать record_incident, спамить.
@@ -278,11 +319,15 @@ Groups systemPrompt: 14 строк инструкций с "мы подобра�
 - [x] Multi-user Level 2 code (call quotas, session guards) — `c37a1b6c5`
 - [x] allowFrom fix — `90f3a3699`
 - [x] Voximplant key recovery — новый service account `f4c88d2d`
+- [x] Yandex Calendar OAuth flow + schema (PR-1) — `a4b977fe8`, 5 марта
+- [x] SKILL.md v2: дистилляция логики анализа из NABU_TIER_SYSTEM.md — `a371c2312`, 5 марта
 - [ ] **Закоммитить промпт-фиксы** (SOUL.md, config, voice-call) — в worktree, ждёт ревью
 - [ ] **Voice-call: pre-warm OpenAI сессию** при initiateCall (Фаза 7) — root cause задержки 10с
 
 ### P1: Следующее
 
+- [ ] **Yandex Calendar CRUD** (PR-2) — CalDAV write ops (create/update/delete)
+- [ ] **SKILL.md Фаза B** — обновить cron prompts в index.ts (после 2-3 дней наблюдения за v2)
 - [ ] Voice-call: мягкое anti-loop правило (без агрессивных farewell)
 - [ ] Voice-call: рассмотреть VAD eagerness medium
 - [ ] Voice-call: проверить echo cancellation в Voximplant
@@ -322,6 +367,7 @@ Groups systemPrompt: 14 строк инструкций с "мы подобра�
 | `extensions/nabu-calendar/src/ics-diff.ts`               | Diff engine                           |
 | `extensions/nabu-calendar/src/store.ts`                  | Per-user config (JSON)                |
 | `extensions/nabu-calendar/src/ledger.ts`                 | Incident FSM + dedup + cooldown       |
+| `extensions/nabu-calendar/src/yandex-auth.ts`            | Yandex OAuth 2.0 + PKCE               |
 | `extensions/nabu-calendar/src/types.ts`                  | CalendarEvent, etc.                   |
 | `extensions/nabu-calendar/src/config.ts`                 | Plugin config schema                  |
 
