@@ -99,6 +99,7 @@
   "channels": {
     "telegram": {
       "enabled": true,
+      "commands": { "native": false, "nativeSkills": false },
       "dmPolicy": "open",
       "allowFrom": ["*"],
       "groupPolicy": "allowlist",
