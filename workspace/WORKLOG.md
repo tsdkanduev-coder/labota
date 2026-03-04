@@ -62,7 +62,60 @@
 - `b46e612fe` — Natural first phrase + bootstrap SOUL.md
 - `5fb6234aa` — Fix start-of-call stuttering (final)
 
-**Текущее состояние:** Работает на проде. Voximplant provider. Бот звонит, бронирует, отправляет отчёт в Telegram.
+### Фаза 5: Multi-user hardening (3 марта)
+
+- `c37a1b6c5` — Level 1 config + Level 2 code (daily call limits, includeAllSessions guard)
+- `82eafef4f` — Daily call limit 3 → 30, restore maxConcurrentCalls to 20
+
+### Фаза 6: Prompt refactoring (4 марта, НЕ ЗАКОММИЧЕНО)
+
+**Статус: готово к ревью, не на main.**
+
+Файлы с изменениями (в worktree `claude/flamboyant-jones`):
+
+**`extensions/voice-call/index.ts`** — 4 изменения:
+
+1. **Tool schema prompt description (строки 166-170)**: убрано "MUST include guest name, date/time, guests" → гибкое описание. Для бронирования рекомендует включать параметры, но разрешает любые звонки (инфо, вопросы и т.д.).
+
+2. **Tool description (строки 624-631)**: та же логика — убрано жёсткое "never call without all three" → "for restaurant bookings try to include... for other calls — that's fine too".
+
+3. **Call summary prompt (строка 915)**: "мы уточнили" → "я уточнил". НЕ "мы".
+
+4. **Call summary prompt (строки 922, 929)**: "Остаёмся в вашем распоряжении" → "Если нужна помощь — обращайтесь" + пример summary обновлён.
+
+### Фаза 7: Realtime audio pipeline bug (4 марта, АНАЛИЗ)
+
+**Симптомы:**
+
+- Бот начинает говорить через 10+ секунд после поднятия трубки
+- Бот сам себе подтверждает бронирование
+
+**Root cause найден:**
+
+`media-stream.ts` строка 493: `sttSession.connect()` вызывается **БЕЗ await** (fire-and-forget). OpenAI Realtime WebSocket подключается в фоне, а `sendAudio()` (строка 509) проверяет `if (!this.connected)` и **молча дропает аудио**.
+
+**Timeline бага:**
+
+```
+t=0s    initiateCall() → Voximplant звонит
+t=5-15s Телефон звонит (OpenAI НЕ подключается — ждёт media stream)
+t=15s   Callee берёт трубку → media stream → createSession()
+t=15s   sttSession.connect() запущен без await, OpenAI WS подключается
+t=15-18s Callee говорит "алло?", "да, слушаю" — аудио ДРОПАЕТСЯ (connected=false)
+t=18s   OpenAI готов, аудио начинает проходить
+t=20s   Бот наконец начинает говорить
+t=20s+  Callee отвечает "да" (на сам вопрос бота) → бот принимает за подтверждение
+```
+
+**Дополнительный фактор:** в коммите `ca3624d22` (2 марта) удалены anti-monologue правила из промпта ("после каждой реплики жди ответа"), потому что они вызывали другой баг (преждевременное прощание на любое "да"). Без этих правил + задержка аудио = самоподтверждение.
+
+**Предлагаемый фикс:**
+
+1. **Pre-warm OpenAI сессию** при `initiateCall()`, а не при подключении media stream. Пока телефон звонит (5-15с), OpenAI уже подключён и ждёт. При подключении media — аудио сразу идёт в готовую сессию, 0 задержка.
+2. **Мягкое anti-loop правило** в промпте (не агрессивное как раньше): "После своей реплики жди ответа. Не подтверждай бронь пока собеседник явно не подтвердил."
+3. **VAD eagerness** — рассмотреть снижение с "high" до "medium".
+
+**Текущее состояние:** Работает на проде. Voximplant provider. Бот звонит, бронирует, отправляет отчёт в Telegram. Есть баг с задержкой первых секунд звонка (Фаза 7).
 
 ---
 
@@ -140,9 +193,46 @@
 ## Bot Persona (SOUL.md)
 
 - `1aefd55d8` 24 фев — Bootstrap SOUL.md into workspace on first deploy
+- `90f3a3699` 4 мар — allowFrom fix + SOUL.md/SKILL.md refactor (deployed)
 - Nabu — персональный консьерж-ассистент
 - Тон: деловой, уважительный, тёплый, лаконичный
 - Форматирование под Telegram (тире, пустые строки, без markdown headers)
+
+### Prompt refactoring (4 марта, НЕ ЗАКОММИЧЕНО)
+
+**`workspace/SOUL.md`** — 5 изменений:
+
+1. **Анти-мета блок**: "Ты уже полностью настроен. Не предлагай настроить себя. Имя — Nabu, не обсуждается." Без этого LLM при /start "просыпается" и предлагает выбрать имя.
+
+2. **"Я" не "мы"**: "Пиши от первого лица единственного числа: «я нашёл», «забронировал»." Без явного правила LLM использует "мы" (особенно из-за groups systemPrompt).
+
+3. **Строгий онбординг**: "отправь ИМЕННО ЭТО сообщение" + 4 правила НЕ (не придумывай, не спрашивай имя, не предлагай настройку). Было "адаптируй под контекст" → LLM выдумывал "Мы только что проснулись в этом пространстве".
+
+4. **Опечатка**: "атморсфера" → "атмосфера".
+
+5. **Пустой заголовок**: удалён `## Сценарии` (мусор).
+
+**`config/openclaw.json`** — 1 изменение:
+
+Groups systemPrompt: 14 строк инструкций с "мы подобрали" → 1 строка: "Ты — Nabu. Следуй SOUL.md. Отвечай когда упомянут. Будь краток."
+
+**Контекст:** groups systemPrompt применяется ТОЛЬКО в групповых чатах. DM использует только SOUL.md. Подтверждено кодом: `bot-message-context.ts` ~строка 637.
+
+### Аудит промпт-пайплайна (4 марта)
+
+Все места где LLM получает инструкции:
+
+| Место                            | Тип                  | Вердикт                                                     |
+| -------------------------------- | -------------------- | ----------------------------------------------------------- |
+| SOUL.md → DM system prompt       | Persona + rules      | Исправлен (см. выше)                                        |
+| config groups systemPrompt       | Group chat only      | Исправлен (см. выше)                                        |
+| voice_call tool description      | Tool schema          | Исправлен — разрешены любые звонки                          |
+| voice_call prompt field          | TypeBox schema       | Исправлен — гибкое описание                                 |
+| voice_call summary prompt        | generateLlmSummary() | Исправлен — "я" не "мы"                                     |
+| voice_call realtime instructions | webhook.ts:270-294   | Примеры с обеих сторон диалога — не трогаем (не root cause) |
+| config assistantInstructions     | Realtime voice       | OK — нейтральный                                            |
+| SKILL.md calendar                | Calendar tool        | OK — не трогаем                                             |
+| tools.deny list                  | Security             | OK                                                          |
 
 ---
 
@@ -160,68 +250,52 @@
 
 ## Документация
 
-| Документ                              | Статус          | Описание                         |
-| ------------------------------------- | --------------- | -------------------------------- |
-| `workspace/SOUL.md`                   | Актуален        | Persona бота                     |
-| `workspace/CALENDAR_PRD.md`           | Актуален (v0.2) | PRD: Telegram-first architecture |
-| `workspace/CALENDAR_BOT_TOOLS.md`     | V1.1/V2 спека   | Расширенный набор тулов          |
-| `workspace/CALENDAR_DATA_API.md`      | V2 спека        | Backend API + PostgreSQL         |
-| `workspace/CALENDAR_MOCKUP_REVIEW.md` | Reference       | Обзор iOS mockups                |
+| Документ                                         | Статус           | Описание                                    |
+| ------------------------------------------------ | ---------------- | ------------------------------------------- |
+| `workspace/SOUL.md`                              | Актуален         | Persona бота                                |
+| `workspace/CALENDAR_PRD.md`                      | Актуален (v0.2)  | PRD: Telegram-first architecture            |
+| `workspace/CALENDAR_BOT_TOOLS.md`                | V1.1/V2 спека    | Расширенный набор тулов                     |
+| `workspace/CALENDAR_DATA_API.md`                 | V2 спека         | Backend API + PostgreSQL                    |
+| `workspace/CALENDAR_MOCKUP_REVIEW.md`            | Reference        | Обзор iOS mockups                           |
 | `apps/LabotaCalendarPreview/NABU_TIER_SYSTEM.md` | V2 спека (в git) | 9-stage pipeline, two-score priority, 60 KB |
 
 ---
+
+## Infra
+
+- **Render:** service `srv-d67i0tur433s73f6t48g`, owner `tea-d67i047pm1nc7387sd2g`
+- **Config:** `OPENCLAW_CONFIG_PATH=/app/config/openclaw.json` (JSON5, в git)
+- **Voximplant:** account 10277772, service account `f4c88d2d-161c-4c08-9127-0135181746d0` (Nabu - Recovery), rule 8315125
+- **Voximplant key recovery (4 марта):** приватный ключ был повреждён при PUT env-vars восстановлении (DER +1 байт). Пересоздан service account, обновлены KEY_ID + PRIVATE_KEY_B64 в Render.
+- **ВАЖНО:** Render PUT `/env-vars` заменяет ВСЕ переменные. Использовать только Dashboard или GET → modify → PUT с верификацией.
 
 ## Backlog
 
 ### P0: Прямо сейчас
 
 - [x] Закоммитить и задеплоить Codex-фиксы (calendar) — `ab167c3`, Render live 28 фев 22:05
-- [ ] **BUG:** Instance crashes (exit status 1) на Render — 1 мар 8:09 AM и 6:29 PM, service auto-recovered. Нужна диагностика логов.
-- [ ] Переподключить календарь на проде (пересоздать cron jobs с NO_REPLY)
-- [ ] Тест на проде: проактивные + реактивные сценарии
+- [x] Multi-user Level 1 config (dmPolicy, dmScope, tools.deny) — `c37a1b6c5`
+- [x] Multi-user Level 2 code (call quotas, session guards) — `c37a1b6c5`
+- [x] allowFrom fix — `90f3a3699`
+- [x] Voximplant key recovery — новый service account `f4c88d2d`
+- [ ] **Закоммитить промпт-фиксы** (SOUL.md, config, voice-call) — в worktree, ждёт ревью
+- [ ] **Voice-call: pre-warm OpenAI сессию** при initiateCall (Фаза 7) — root cause задержки 10с
 
-### P1: V1.1 (следующий milestone)
+### P1: Следующее
 
-**Calendar write-ops:**
-
-- [ ] Google Calendar API OAuth
-- [ ] ICS read + API write (stepping stone)
-- [ ] create_event / update_event actions
-- [ ] Confirm flow через TG inline-кнопки
-- [ ] SKILL.md: снять ограничения 1-3, добавить write-ops guidance
-
-**Anti-spam guardrails:**
-
-- [ ] Hard gate: `send_proactive` action или delivery hook
-- [ ] Hard daily cap на proactive messages
-- [ ] E2E тест на proactive loop
-
-**Event-driven проактивность:**
-
-- [ ] Google events.watch (webhooks вместо 15-мин polling)
-- [ ] Pub/Sub или публичный webhook endpoint
-
-**Voice-call + Calendar:**
-
-- [ ] После бронирования по звонку → предложить добавить в календарь
-- [ ] Связка: voice-call report → create_event → confirm
+- [ ] Voice-call: мягкое anti-loop правило (без агрессивных farewell)
+- [ ] Voice-call: рассмотреть VAD eagerness medium
+- [ ] Voice-call: проверить echo cancellation в Voximplant
+- [ ] Anti-spam guardrails (hard gate для proactive messages)
+- [ ] Google events.watch (webhooks вместо polling)
+- [ ] Pre-filter cron: пустой diff → skip LLM (50% экономии)
+- [ ] Дешёвая модель для cron (GPT-4o-mini)
 
 ### P2: V2
 
-**iOS app:**
-
-- [ ] SwiftUI app (визуализация дня, priority-лента)
-- [ ] Calendar Backend API (PostgreSQL, REST, AI-ранжирование)
-- [ ] EventKit sync (нативная iOS интеграция)
-- [ ] Push notifications
-- [ ] Формальный importance/movability scoring (NABU_TIER_SYSTEM.md)
-
-**Autopilot (V3):**
-
-- [ ] Бот сам создаёт/двигает события без подтверждения
-- [ ] Правила пользователя (не до 09:00, не двигать HIGH, макс 2/день)
-- [ ] Undo window 5 мин
-- [ ] Audit log
+- [ ] iOS app (SwiftUI, Calendar Backend API)
+- [ ] Autopilot mode (бот двигает события без подтверждения)
+- [ ] Мониторинг: token counter + Sentry
 
 ---
 
@@ -251,12 +325,13 @@
 | `extensions/nabu-calendar/src/types.ts`                  | CalendarEvent, etc.                   |
 | `extensions/nabu-calendar/src/config.ts`                 | Plugin config schema                  |
 
-### Persona + Docs
+### Persona + Docs + Config
 
-| Файл                              | Роль              |
-| --------------------------------- | ----------------- |
-| `workspace/SOUL.md`               | Bot persona       |
-| `workspace/CALENDAR_PRD.md`       | PRD v0.2          |
-| `workspace/CALENDAR_BOT_TOOLS.md` | V1.1/V2 tool spec |
-| `workspace/CALENDAR_DATA_API.md`  | V2 backend spec   |
-| `workspace/WORKLOG.md`            | Этот файл         |
+| Файл                              | Роль                                            |
+| --------------------------------- | ----------------------------------------------- |
+| `workspace/SOUL.md`               | Bot persona (DM system prompt)                  |
+| `config/openclaw.json`            | Platform config (groups prompt, tools, plugins) |
+| `workspace/CALENDAR_PRD.md`       | PRD v0.2                                        |
+| `workspace/CALENDAR_BOT_TOOLS.md` | V1.1/V2 tool spec                               |
+| `workspace/CALENDAR_DATA_API.md`  | V2 backend spec                                 |
+| `workspace/WORKLOG.md`            | Этот файл                                       |
