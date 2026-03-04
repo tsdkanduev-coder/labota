@@ -102,7 +102,7 @@
       "dmPolicy": "open",
       "allowFrom": ["*"],
       "groupPolicy": "allowlist",
-      "streamMode": "partial",
+      "streamMode": "off",
       "groups": {
         "*": {
           "requireMention": true,
