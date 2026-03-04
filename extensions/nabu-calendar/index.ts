@@ -23,11 +23,19 @@ import { IcsFetcher } from "./src/ics-fetcher.js";
 import { filterByDate, filterByRange, findFreeSlots } from "./src/ics-helpers.js";
 import { NabuLedger } from "./src/ledger.js";
 import { NabuStore } from "./src/store.js";
+import {
+  buildYandexAuthUrl,
+  exchangeYandexCode,
+  fetchYandexUserInfo,
+  revokeYandexToken,
+} from "./src/yandex-auth.js";
 
-// ─── Google OAuth Config ────────────────────────────────────────────
+// ─── OAuth Config ───────────────────────────────────────────────────
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || "";
+const YANDEX_CLIENT_ID = process.env.YANDEX_CALENDAR_CLIENT_ID || "";
+const YANDEX_CLIENT_SECRET = process.env.YANDEX_CALENDAR_CLIENT_SECRET || "";
 const CONFIRM_SECRET = process.env.NABU_CONFIRM_SECRET || "";
 const BASE_URL = process.env.OPENCLAW_BASE_URL || "https://openclaw-1zxd.onrender.com";
 
@@ -71,6 +79,7 @@ const NabuCalendarToolSchema = Type.Object({
       Type.Literal("disable"),
       // P2: Write-ops actions
       Type.Literal("auth"),
+      Type.Literal("auth_yandex"),
       Type.Literal("search_events"),
       Type.Literal("create_event"),
       Type.Literal("update_event"),
@@ -125,9 +134,7 @@ const NabuCalendarToolSchema = Type.Object({
   eventDescription: Type.Optional(
     Type.String({ description: "Event description (for create/update)" }),
   ),
-  eventId: Type.Optional(
-    Type.String({ description: "Google Calendar event ID (for update/delete)" }),
-  ),
+  eventId: Type.Optional(Type.String({ description: "Calendar event ID (for update/delete)" })),
   searchQuery: Type.Optional(
     Type.String({ description: "Search query for finding events (for search_events)" }),
   ),
@@ -453,6 +460,137 @@ const nabuCalendarPlugin = {
       },
     });
 
+    // ─── P3: Yandex OAuth Callback HTTP Route ─────────────────
+
+    api.registerHttpRoute({
+      path: "/plugins/nabu-calendar/oauth/yandex/callback",
+      handler: async (req, res) => {
+        try {
+          const url = new URL(req.url || "", `https://${req.headers.host}`);
+          const code = url.searchParams.get("code");
+          const state = url.searchParams.get("state");
+          const error = url.searchParams.get("error");
+
+          if (error) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Authorization failed</h2><p>Error: ${error}</p><p>Return to Telegram and try again.</p></body></html>`,
+            );
+            return;
+          }
+
+          if (!code || !state) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Invalid request</h2><p>Missing code or state parameter.</p></body></html>`,
+            );
+            return;
+          }
+
+          const stateManager = ensureOAuthStateManager();
+          const pendingState = stateManager.resolve(state);
+
+          if (!pendingState) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Link expired</h2><p>Authorization link has expired or was already used. Return to Telegram and request a new link.</p></body></html>`,
+            );
+            return;
+          }
+
+          // Verify this is a Yandex OAuth state
+          if (pendingState.provider !== "yandex") {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(
+              `<html><body><h2>Invalid request</h2><p>State mismatch — expected Yandex OAuth flow.</p></body></html>`,
+            );
+            return;
+          }
+
+          const redirectUri = `${BASE_URL}/plugins/nabu-calendar/oauth/yandex/callback`;
+          const tokens = await exchangeYandexCode(
+            code,
+            pendingState.codeVerifier,
+            redirectUri,
+            YANDEX_CLIENT_ID,
+            YANDEX_CLIENT_SECRET,
+          );
+
+          // Fetch user info (email)
+          let userInfo: { email: string; name?: string } | null = null;
+          try {
+            userInfo = await fetchYandexUserInfo(tokens.accessToken);
+          } catch (e) {
+            api.logger.warn(
+              `[nabu-calendar] Failed to fetch Yandex userinfo: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+
+          const email = userInfo?.email || "unknown";
+
+          // Update store with tokens
+          const s = ensureStore();
+          const existingConfig = s.get(pendingState.chatId);
+          if (existingConfig) {
+            s.update(pendingState.chatId, {
+              yandexAccessToken: tokens.accessToken,
+              yandexRefreshToken: tokens.refreshToken ?? existingConfig.yandexRefreshToken,
+              yandexAccessTokenExpiresAt: tokens.expiresAt,
+              yandexCalendarConnected: true,
+              yandexEmail: email,
+              activeWriteProvider: "yandex",
+              writeEnabled: true,
+              consentMode: "act_with_confirmation",
+            });
+          }
+
+          // Notify user in Telegram
+          try {
+            const sendMsg = (
+              api as unknown as {
+                runtime?: {
+                  channel?: {
+                    telegram?: {
+                      sendMessageTelegram?: (to: string, text: string) => Promise<unknown>;
+                    };
+                  };
+                };
+              }
+            ).runtime?.channel?.telegram?.sendMessageTelegram;
+            if (sendMsg) {
+              await sendMsg(
+                String(pendingState.chatId),
+                `Yandex Calendar connected (account: ${email}). I can now create and modify events.`,
+              );
+            }
+          } catch (e) {
+            api.logger.warn(
+              `[nabu-calendar] Failed to send Telegram notification: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+
+          api.logger.info(
+            `[nabu-calendar] Yandex OAuth complete for chat ${pendingState.chatId}, email=${email}`,
+          );
+
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(`<html><body style="font-family: sans-serif; text-align: center; padding: 40px;">
+            <h2>Done! ✓</h2>
+            <p>Yandex account <strong>${email}</strong> connected.</p>
+            <p>Return to Telegram.</p>
+          </body></html>`);
+        } catch (err) {
+          api.logger.error(
+            `[nabu-calendar] Yandex OAuth callback error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(
+            `<html><body><h2>Server error</h2><p>Something went wrong. Please try again.</p></body></html>`,
+          );
+        }
+      },
+    });
+
     // ─── Register Tool ─────────────────────────────────────────
 
     api.registerTool((toolCtx) => {
@@ -486,6 +624,8 @@ const nabuCalendarPlugin = {
               // P2: Write-ops actions
               case "auth":
                 return await handleAuth(chatId);
+              case "auth_yandex":
+                return await handleAuthYandex(chatId);
               case "search_events":
                 return await handleSearchEvents(params, chatId);
               case "create_event":
@@ -592,6 +732,8 @@ const nabuCalendarPlugin = {
         createdAt: new Date().toISOString(),
         // P2: defaults for Google Calendar write-ops fields
         googleCalendarConnected: false,
+        // P3: defaults for Yandex Calendar write-ops fields
+        yandexCalendarConnected: false,
         consentMode: "read_only" as const,
         writeOpsHourCount: 0,
       };
@@ -993,6 +1135,10 @@ const nabuCalendarPlugin = {
         // P2: Google Calendar write-ops status
         googleCalendarConnected: userConfig.googleCalendarConnected,
         googleEmail: userConfig.googleEmail,
+        // P3: Yandex Calendar write-ops status
+        yandexCalendarConnected: userConfig.yandexCalendarConnected,
+        yandexEmail: userConfig.yandexEmail,
+        activeWriteProvider: userConfig.activeWriteProvider,
         consentMode: userConfig.consentMode,
         writeOpsHourCount: userConfig.writeOpsHourCount,
       });
@@ -1017,6 +1163,19 @@ const nabuCalendarPlugin = {
       if (userConfig?.googleRefreshToken) {
         try {
           await revokeToken(userConfig.googleRefreshToken);
+        } catch {
+          // Best-effort revocation
+        }
+      }
+
+      // Revoke Yandex tokens if connected
+      if (userConfig?.yandexAccessToken && YANDEX_CLIENT_ID && YANDEX_CLIENT_SECRET) {
+        try {
+          await revokeYandexToken(
+            userConfig.yandexAccessToken,
+            YANDEX_CLIENT_ID,
+            YANDEX_CLIENT_SECRET,
+          );
         } catch {
           // Best-effort revocation
         }
@@ -1105,6 +1264,47 @@ const nabuCalendarPlugin = {
         ...(nonGoogleWarning && { warning: nonGoogleWarning }),
         instruction:
           "Send this link to the user. They need to click it and authorize Google Calendar access in their browser.",
+      });
+    }
+
+    async function handleAuthYandex(chatId: number | null) {
+      if (!chatId) {
+        return textResult({ error: "Cannot determine chat ID" });
+      }
+
+      if (!YANDEX_CLIENT_ID || !YANDEX_CLIENT_SECRET) {
+        return textResult({
+          error:
+            "Yandex Calendar API not configured. YANDEX_CALENDAR_CLIENT_ID and YANDEX_CALENDAR_CLIENT_SECRET must be set.",
+        });
+      }
+
+      const s = ensureStore();
+      const userConfig = s.get(chatId);
+
+      if (!userConfig) {
+        return textResult({
+          error:
+            "Calendar not set up. Connect ICS feed first, then authorize Yandex Calendar for write access.",
+        });
+      }
+
+      // Check if already connected
+      if (userConfig.yandexCalendarConnected) {
+        return textResult({
+          alreadyConnected: true,
+          yandexEmail: userConfig.yandexEmail,
+          message: `Yandex Calendar is already connected (${userConfig.yandexEmail || "unknown account"}).`,
+        });
+      }
+
+      const stateManager = ensureOAuthStateManager();
+      const { authUrl } = buildYandexAuthUrl(chatId, BASE_URL, YANDEX_CLIENT_ID, stateManager);
+
+      return textResult({
+        authUrl,
+        instruction:
+          "Send this link to the user. They need to click it and authorize Yandex Calendar access in their browser.",
       });
     }
 

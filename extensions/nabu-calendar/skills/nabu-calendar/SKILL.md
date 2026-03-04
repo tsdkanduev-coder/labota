@@ -23,6 +23,7 @@ One tool, parameter `action`:
 - `handle_callback` — process button taps: `{ action: "handle_callback", callbackAction: "ack", incidentId: "..." }`
 - `record_incident` — log a proactive message for dedup/cooldown: `{ action: "record_incident", incidentId: "...", trigger: "periodic-sync", textSnippet: "..." }`
 - `auth` — connect Google Calendar for write access: `{ action: "auth" }`
+- `auth_yandex` — connect Yandex Calendar for write access: `{ action: "auth_yandex" }`
 - `search_events` — find events by name/date: `{ action: "search_events", searchQuery: "...", searchDate: "2026-03-03" }`
 - `create_event` — create event (two-step: preview → confirm): `{ action: "create_event", summary: "...", startDateTime: "...", endDateTime: "..." }`
 - `update_event` — update event (two-step): `{ action: "update_event", eventId: "...", summary: "..." }`
@@ -31,10 +32,22 @@ One tool, parameter `action`:
 
 After setup — create ALL cron jobs from the cronJobs[] field using the cron tool.
 
-## Write Operations (Google Calendar)
+## Calendar Providers
 
-Check status → `googleCalendarConnected`. If false and user asks to modify calendar:
-→ call `auth`, send the link to the user.
+Check status → `activeWriteProvider`.
+
+- If null/undefined and user wants to modify calendar → ask which calendar (Google/Yandex)
+- `auth` — connect Google Calendar
+- `auth_yandex` — connect Yandex Calendar
+
+If user's ICS feed from calendar.google.com → suggest Google.
+If from calendar.yandex.ru → suggest Yandex.
+If unclear → ask user.
+
+## Write Operations
+
+Check status → `googleCalendarConnected` / `yandexCalendarConnected`. If neither is connected and user asks to modify calendar:
+→ determine which provider is appropriate, call `auth` or `auth_yandex`, send the link to the user.
 
 ### Write-ops flow:
 
@@ -89,9 +102,9 @@ Example:
 - After a voice-call booking — suggest adding it to the calendar
 - After successful creation: "Добавил в календарь ✓" + syncNote + meetLink (if present)
 
-### Google Meet:
+### Google Meet (Google Calendar only):
 
-- `addGoogleMeet: true` — добавляет ссылку на Google Meet к событию.
+- `addGoogleMeet: true` — добавляет ссылку на Google Meet к событию. Работает ТОЛЬКО с Google Calendar.
 - Ставь `true` для онлайн-встреч: созвон, sync, 1:1, interview, meeting.
 - Ставь `false` (или не передавай) для офлайн-событий: ресторан, врач,
   просмотр квартиры, напоминание.
@@ -123,7 +136,7 @@ Example:
 - forbidden → "You don't have permission to modify this event (you might not be the organizer)"
 - confirmation_expired → show the updated preview automatically, don't ask user to repeat the request
 - rate_limit → "Too many changes this hour, try again later"
-- needsReauth → "Google Calendar access expired, need to reconnect: [link]"
+- needsReauth → "Calendar access expired, need to reconnect" + call auth/auth_yandex
 
 ## Limitations (IMPORTANT)
 
@@ -211,7 +224,7 @@ might want to take.
 
 - Never include the .ics URL in messages (it's a secret URL)
 - Never invent events that aren't in the calendar data
-- If Google Calendar is not connected for writes, guide the user through auth
+- If no calendar provider connected for writes, guide the user through auth (Google) or auth_yandex (Yandex)
 - If calendar is not connected at all, guide the user through setup
 
 ## Examples

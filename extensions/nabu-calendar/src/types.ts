@@ -65,6 +65,15 @@ export const NabuUserConfigSchema = z.object({
   consentMode: z.enum(["read_only", "act_with_confirmation"]).default("read_only"),
   writeOpsHourCount: z.number().default(0), // rate limit: writes this hour
   writeOpsHourReset: z.string().optional(), // ISO hour start (reset when hour changes)
+  // P3: Yandex Calendar write-ops (OAuth tokens)
+  yandexAccessToken: z.string().optional(),
+  yandexRefreshToken: z.string().optional(),
+  yandexAccessTokenExpiresAt: z.number().optional(), // epoch ms
+  yandexCalendarConnected: z.boolean().default(false),
+  yandexEmail: z.string().optional(), // email from userinfo (display purpose)
+  yandexCalendarUrl: z.string().optional(), // cached CalDAV primary calendar URL
+  // Provider routing
+  activeWriteProvider: z.enum(["google", "yandex"]).optional(),
 });
 export type NabuUserConfig = z.infer<typeof NabuUserConfigSchema>;
 
