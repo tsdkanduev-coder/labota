@@ -8,6 +8,7 @@ interface PendingOAuthState {
   chatId: number;
   codeVerifier: string;
   expiresAt: number; // epoch ms
+  provider?: "google" | "yandex"; // undefined = "google" (backwards compat)
 }
 
 interface OAuthTokens {
@@ -33,11 +34,11 @@ const STATE_TTL_MS = 10 * 60_000; // 10 minutes
 
 // ─── PKCE Helpers ──────────────────────────────────────────────────
 
-function generateCodeVerifier(): string {
+export function generateCodeVerifier(): string {
   return crypto.randomBytes(32).toString("base64url");
 }
 
-function generateCodeChallenge(verifier: string): string {
+export function generateCodeChallenge(verifier: string): string {
   return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
 
