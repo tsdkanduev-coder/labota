@@ -604,7 +604,7 @@ const nabuCalendarPlugin = {
         name: "nabu_calendar",
         label: "Nabu Calendar",
         description:
-          "Personal calendar assistant. Actions: setup (connect .ics feed), fetch (get events), find_slots (find free time), handle_callback (process button taps), record_incident (log a proactive message for dedup/cooldown), status, disable.",
+          "Personal calendar assistant. Actions: setup (connect .ics feed), auth (get Google OAuth link for write access), auth_yandex (get Yandex OAuth link), fetch (get events), find_slots (find free time), search_events (find by query), create_event / update_event / delete_event (write ops — require OAuth), handle_callback (process button taps), record_incident (log a proactive message for dedup/cooldown), status, disable.",
         parameters: NabuCalendarToolSchema,
 
         async execute(_toolCallId, params) {
@@ -837,7 +837,8 @@ const nabuCalendarPlugin = {
             name: `nabu-sync-periodic-${chatId}`,
             schedule: { kind: "every", everyMs: config.syncIntervalMs },
             message: [
-              `Periodic calendar sync for chat ${chatId}.`,
+              `Periodic calendar sync for chat ${chatId}. Timezone: ${timezone}.`,
+              `NIGHT SKIP: If current local time is between 23:00 and 08:00 → reply "NO_REPLY" immediately. Do NOT call any tools.`,
               `Call nabu_calendar with action="fetch", date="today", chatId=${chatId}.`,
               `Check the "diff" field AND "ledger" field in the response. Apply the proactive model from your SKILL.md:`,
               ``,
@@ -1340,7 +1341,8 @@ const nabuCalendarPlugin = {
       const userConfig = s.get(chatId);
       if (!userConfig?.googleCalendarConnected) {
         return textResult({
-          error: "Google Calendar not connected. Call auth first.",
+          error:
+            'Google Calendar write access not connected. Call nabu_calendar with action="auth" to get an OAuth link for the user. The user must click the link to authorize write access.',
           needsAuth: true,
         });
       }
@@ -1424,7 +1426,8 @@ const nabuCalendarPlugin = {
       const userConfig = s.get(chatId);
       if (!userConfig?.googleCalendarConnected) {
         return textResult({
-          error: "Google Calendar not connected. Call auth first.",
+          error:
+            'Google Calendar write access not connected. Call nabu_calendar with action="auth" to get an OAuth link for the user. The user must click the link to authorize write access.',
           needsAuth: true,
         });
       }
@@ -1754,7 +1757,8 @@ const nabuCalendarPlugin = {
       const userConfig = s.get(chatId);
       if (!userConfig?.googleCalendarConnected) {
         return textResult({
-          error: "Google Calendar not connected. Call auth first.",
+          error:
+            'Google Calendar write access not connected. Call nabu_calendar with action="auth" to get an OAuth link for the user. The user must click the link to authorize write access.',
           needsAuth: true,
         });
       }
@@ -1968,7 +1972,8 @@ const nabuCalendarPlugin = {
       const userConfig = s.get(chatId);
       if (!userConfig?.googleCalendarConnected) {
         return textResult({
-          error: "Google Calendar not connected. Call auth first.",
+          error:
+            'Google Calendar write access not connected. Call nabu_calendar with action="auth" to get an OAuth link for the user. The user must click the link to authorize write access.',
           needsAuth: true,
         });
       }
