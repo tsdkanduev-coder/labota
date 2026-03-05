@@ -13,7 +13,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "openai/gpt-4.1"
+        "primary": "openai/gpt-4o"
       },
       "compaction": {
         "mode": "safeguard"
@@ -139,6 +139,13 @@
         "config": {
           "enabled": true,
           "writeEnabled": true
+        }
+      },
+      "nabu-places": {
+        "enabled": true,
+        "config": {
+          "enabled": true,
+          "searchModel": "gpt-4.1-mini"
         }
       },
       "voice-call": {
