@@ -44,6 +44,7 @@ const BASE_URL = process.env.OPENCLAW_BASE_URL || "https://openclaw-1zxd.onrende
 
 const ICS_HOST_ALLOWLIST = new Set([
   "calendar.google.com",
+  "calendar.yandex.ru",
   "outlook.office365.com",
   "outlook.live.com",
   "caldav.icloud.com",
