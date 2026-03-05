@@ -779,10 +779,18 @@ const nabuCalendarPlugin = {
       // Resolve delivery target for cron jobs
       const deliveryTarget = messageTo ? parseDeliveryTarget(messageTo) : undefined;
 
+      const cronJobNames = [
+        `nabu-brief-morning-${chatId}`,
+        `nabu-evening-lookahead-${chatId}`,
+        `nabu-sync-periodic-${chatId}`,
+        `nabu-memory-consolidation-${chatId}`,
+      ];
+
       // P1 fix: return proper OpenClaw cron job schema
       return textResult({
         ok: true,
         ...syncResult,
+        cronJobNames,
         cronJobs: [
           buildCronJob({
             name: `nabu-brief-morning-${chatId}`,
@@ -873,8 +881,8 @@ const nabuCalendarPlugin = {
         ],
         instruction:
           syncResult.syncStatus === "pending"
-            ? "Calendar connected but initial sync failed. Events will appear on next periodic sync. Create all 4 cron jobs listed above using the cron tool."
-            : "Create all 4 cron jobs listed above using the cron tool. Each item is a complete job object — pass it as the `job` parameter to cron({ action: 'add', job: <item> }).",
+            ? "Calendar connected but initial sync failed. Events will appear on next periodic sync. First call cron list(includeDisabled=true), remove existing jobs with names from cronJobNames (to avoid stale schedules/duplicates), then add the 4 cron jobs listed above."
+            : "First call cron list(includeDisabled=true), remove existing jobs with names from cronJobNames (to avoid stale schedules/duplicates), then add the 4 cron jobs listed above. Each item is a complete job object — pass it as the `job` parameter to cron({ action: 'add', job: <item> }).",
       });
     }
 
@@ -1056,7 +1064,7 @@ const nabuCalendarPlugin = {
             action: "remind",
             originalMessage: record?.textSnippet,
             minutesBefore: minutes,
-            instruction: `Create a one-shot cron job to remind the user ${minutes} minutes before the relevant event. Use cron({ action: "add", job: { schedule: { kind: "at", at: "<computed-ISO-time>" }, ... } }).`,
+            instruction: `Create a ONE-SHOT cron reminder ${minutes} minutes before the relevant event. Use cron({ action: "add", job: { schedule: { kind: "at", at: "<computed-ISO-time>" }, ... } }). NEVER use schedule.kind="every" for "in/через N minutes" reminders.`,
           });
         }
 

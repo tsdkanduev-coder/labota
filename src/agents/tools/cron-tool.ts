@@ -24,6 +24,10 @@ const REMINDER_CONTEXT_MESSAGES_MAX = 10;
 const REMINDER_CONTEXT_PER_MESSAGE_MAX = 220;
 const REMINDER_CONTEXT_TOTAL_MAX = 700;
 const REMINDER_CONTEXT_MARKER = "\n\nRecent context:\n";
+const MAX_ONE_SHOT_REMINDER_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h
+const RECURRING_CUE_REGEX = /(кажд|every|daily|weekly|ежеднев|еженед|регуляр|повтор)/i;
+const ONE_SHOT_RELATIVE_CUE_REGEX =
+  /(через\s+\d+|in\s+\d+\s*(min|mins|minute|minutes|hour|hours)|через\s+(минут|час))/i;
 
 // Flattened schema: runtime validates per-action requirements.
 const CronToolSchema = Type.Object({
@@ -220,6 +224,43 @@ function inferDeliveryFromSessionKey(agentSessionKey?: string): CronDelivery | n
   return delivery;
 }
 
+function maybeCoerceReminderEveryToOneShot(job: unknown): void {
+  if (!isRecord(job)) {
+    return;
+  }
+  const schedule = isRecord(job.schedule) ? job.schedule : null;
+  if (!schedule || schedule.kind !== "every") {
+    return;
+  }
+  const everyMs = typeof schedule.everyMs === "number" ? schedule.everyMs : NaN;
+  if (!Number.isFinite(everyMs) || everyMs <= 0 || everyMs > MAX_ONE_SHOT_REMINDER_WINDOW_MS) {
+    return;
+  }
+
+  const payload = isRecord(job.payload) ? job.payload : null;
+  if (!payload || payload.kind !== "systemEvent") {
+    return;
+  }
+  const text = typeof payload.text === "string" ? normalizeContextText(payload.text) : "";
+  if (!text) {
+    return;
+  }
+  if (RECURRING_CUE_REGEX.test(text)) {
+    return;
+  }
+  if (!ONE_SHOT_RELATIVE_CUE_REGEX.test(text)) {
+    return;
+  }
+
+  // Common LLM mistake: "in 1 minute" gets mapped to recurring schedule.kind="every".
+  // Convert to one-shot at now + interval.
+  const atIso = new Date(Date.now() + Math.trunc(everyMs)).toISOString();
+  (job as { schedule: unknown }).schedule = { kind: "at", at: atIso };
+  if (!("deleteAfterRun" in job)) {
+    (job as { deleteAfterRun?: boolean }).deleteAfterRun = true;
+  }
+}
+
 export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
   return {
     label: "Cron",
@@ -412,6 +453,7 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
               }
             }
           }
+          maybeCoerceReminderEveryToOneShot(job);
           return jsonResult(await callGatewayTool("cron.add", gatewayOpts, job));
         }
         case "update": {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const callGatewayMock = vi.fn();
 vi.mock("../../gateway/call.js", () => ({
@@ -15,6 +15,10 @@ describe("cron tool", () => {
   beforeEach(() => {
     callGatewayMock.mockReset();
     callGatewayMock.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it.each([
@@ -442,5 +446,50 @@ describe("cron tool", () => {
       params?: { delivery?: { mode?: string; channel?: string; to?: string } };
     };
     expect(call?.params?.delivery).toEqual({ mode: "none" });
+  });
+
+  it("coerces relative reminder every-schedule into one-shot at-schedule", async () => {
+    const now = Date.UTC(2026, 2, 5, 12, 0, 0);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+
+    callGatewayMock.mockResolvedValueOnce({ ok: true });
+
+    const tool = createCronTool();
+    await tool.execute("call-relative-reminder", {
+      action: "add",
+      job: {
+        name: "Напоминание о кальяне",
+        schedule: { kind: "every", everyMs: 60_000 },
+        payload: { kind: "systemEvent", text: "Напоминаем: через 1 минуту нужно оплатить кальян." },
+      },
+    });
+
+    const call = callGatewayMock.mock.calls[0]?.[0] as {
+      params?: { schedule?: { kind?: string; at?: string }; deleteAfterRun?: boolean };
+    };
+    expect(call.params?.schedule?.kind).toBe("at");
+    expect(call.params?.schedule?.at).toBe(new Date(now + 60_000).toISOString());
+    expect(call.params?.deleteAfterRun).toBe(true);
+  });
+
+  it("keeps recurring schedules when reminder text explicitly says every", async () => {
+    callGatewayMock.mockResolvedValueOnce({ ok: true });
+
+    const tool = createCronTool();
+    await tool.execute("call-recurring-reminder", {
+      action: "add",
+      job: {
+        name: "Recurring reminder",
+        schedule: { kind: "every", everyMs: 60_000 },
+        payload: { kind: "systemEvent", text: "Напоминание: каждые 1 минуту проверять статус." },
+      },
+    });
+
+    const call = callGatewayMock.mock.calls[0]?.[0] as {
+      params?: { schedule?: { kind?: string; everyMs?: number } };
+    };
+    expect(call.params?.schedule?.kind).toBe("every");
+    expect(call.params?.schedule?.everyMs).toBe(60_000);
   });
 });
