@@ -25,9 +25,10 @@ const REMINDER_CONTEXT_PER_MESSAGE_MAX = 220;
 const REMINDER_CONTEXT_TOTAL_MAX = 700;
 const REMINDER_CONTEXT_MARKER = "\n\nRecent context:\n";
 const MAX_ONE_SHOT_REMINDER_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h
+const MIN_REMINDER_DELAY_MS = 15_000; // prevent immediate past/future jitter
 const RECURRING_CUE_REGEX = /(кажд|every|daily|weekly|ежеднев|еженед|регуляр|повтор)/i;
 const ONE_SHOT_RELATIVE_CUE_REGEX =
-  /(через\s+\d+|in\s+\d+\s*(min|mins|minute|minutes|hour|hours)|через\s+(минут|час))/i;
+  /(через\s+\d+|через\s+(минут|час|секунд)|in\s+\d+\s*(sec|secs|second|seconds|min|mins|minute|minutes|hour|hours)|in\s+a\s+(second|minute|hour))/i;
 
 // Flattened schema: runtime validates per-action requirements.
 const CronToolSchema = Type.Object({
@@ -75,6 +76,51 @@ function truncateText(input: string, maxLen: number) {
 
 function normalizeContextText(raw: string) {
   return raw.replace(/\s+/g, " ").trim();
+}
+
+function extractReminderBaseText(raw: string): string {
+  return normalizeContextText(stripExistingContext(raw));
+}
+
+function parseRelativeReminderDelayMs(text: string): number | null {
+  const input = text.trim();
+  if (!input) {
+    return null;
+  }
+  const ru = input.match(
+    /через\s+(?:(\d+)\s*(секунд[а-я]*|сек|с|минут[а-я]*|мин|м|час[а-я]*|ч)?|(минут[а-я]*|час[а-я]*|секунд[а-я]*))/i,
+  );
+  if (ru) {
+    const amount = ru[1] ? Number.parseInt(ru[1], 10) : 1;
+    const unit = (ru[2] ?? ru[3] ?? "").toLowerCase();
+    if (Number.isFinite(amount) && amount > 0) {
+      if (unit.startsWith("час") || unit === "ч") {
+        return amount * 60 * 60 * 1000;
+      }
+      if (unit.startsWith("сек") || unit === "с") {
+        return amount * 1000;
+      }
+      return amount * 60 * 1000;
+    }
+  }
+
+  const en = input.match(
+    /in\s+(?:(\d+)\s*(sec|secs|second|seconds|min|mins|minute|minutes|hour|hours)|a\s+(second|minute|hour))/i,
+  );
+  if (en) {
+    const amount = en[1] ? Number.parseInt(en[1], 10) : 1;
+    const unit = (en[2] ?? en[3] ?? "").toLowerCase();
+    if (Number.isFinite(amount) && amount > 0) {
+      if (unit.startsWith("hour")) {
+        return amount * 60 * 60 * 1000;
+      }
+      if (unit.startsWith("sec")) {
+        return amount * 1000;
+      }
+      return amount * 60 * 1000;
+    }
+  }
+  return null;
 }
 
 function extractMessageText(message: ChatMessage): { role: string; text: string } | null {
@@ -241,7 +287,7 @@ function maybeCoerceReminderEveryToOneShot(job: unknown): void {
   if (!payload || payload.kind !== "systemEvent") {
     return;
   }
-  const text = typeof payload.text === "string" ? normalizeContextText(payload.text) : "";
+  const text = typeof payload.text === "string" ? extractReminderBaseText(payload.text) : "";
   if (!text) {
     return;
   }
@@ -254,8 +300,55 @@ function maybeCoerceReminderEveryToOneShot(job: unknown): void {
 
   // Common LLM mistake: "in 1 minute" gets mapped to recurring schedule.kind="every".
   // Convert to one-shot at now + interval.
-  const atIso = new Date(Date.now() + Math.trunc(everyMs)).toISOString();
+  const parsedDelayMs = parseRelativeReminderDelayMs(text);
+  const delayMs = Math.max(
+    MIN_REMINDER_DELAY_MS,
+    Math.min(MAX_ONE_SHOT_REMINDER_WINDOW_MS, parsedDelayMs ?? Math.trunc(everyMs)),
+  );
+  const atIso = new Date(Date.now() + delayMs).toISOString();
   (job as { schedule: unknown }).schedule = { kind: "at", at: atIso };
+  if (!("deleteAfterRun" in job)) {
+    (job as { deleteAfterRun?: boolean }).deleteAfterRun = true;
+  }
+}
+
+function maybeCoercePastAtRelativeReminder(job: unknown): void {
+  if (!isRecord(job)) {
+    return;
+  }
+  const schedule = isRecord(job.schedule) ? job.schedule : null;
+  if (!schedule || schedule.kind !== "at" || typeof schedule.at !== "string") {
+    return;
+  }
+  const atMs = Date.parse(schedule.at);
+  if (!Number.isFinite(atMs)) {
+    return;
+  }
+  const nowMs = Date.now();
+  if (atMs >= nowMs + MIN_REMINDER_DELAY_MS) {
+    return;
+  }
+
+  const payload = isRecord(job.payload) ? job.payload : null;
+  if (!payload || payload.kind !== "systemEvent") {
+    return;
+  }
+  const text = typeof payload.text === "string" ? extractReminderBaseText(payload.text) : "";
+  if (!text || RECURRING_CUE_REGEX.test(text) || !ONE_SHOT_RELATIVE_CUE_REGEX.test(text)) {
+    return;
+  }
+  const delayMs = parseRelativeReminderDelayMs(text);
+  if (!delayMs || delayMs > MAX_ONE_SHOT_REMINDER_WINDOW_MS) {
+    return;
+  }
+
+  // Common model failure: computes absolute `at` in the past for "in N minutes".
+  // Recompute from current server time to keep reminder creation reliable.
+  const safeDelayMs = Math.max(MIN_REMINDER_DELAY_MS, delayMs);
+  (job as { schedule: unknown }).schedule = {
+    kind: "at",
+    at: new Date(nowMs + safeDelayMs).toISOString(),
+  };
   if (!("deleteAfterRun" in job)) {
     (job as { deleteAfterRun?: boolean }).deleteAfterRun = true;
   }
@@ -454,6 +547,7 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
             }
           }
           maybeCoerceReminderEveryToOneShot(job);
+          maybeCoercePastAtRelativeReminder(job);
           return jsonResult(await callGatewayTool("cron.add", gatewayOpts, job));
         }
         case "update": {

@@ -473,6 +473,31 @@ describe("cron tool", () => {
     expect(call.params?.deleteAfterRun).toBe(true);
   });
 
+  it("coerces past absolute schedule for relative reminder into future one-shot", async () => {
+    const now = Date.UTC(2026, 2, 5, 14, 1, 20);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+
+    callGatewayMock.mockResolvedValueOnce({ ok: true });
+
+    const tool = createCronTool();
+    await tool.execute("call-past-at-relative-reminder", {
+      action: "add",
+      job: {
+        name: "Напоминание: проверить статус деплоя",
+        schedule: { kind: "at", at: "2026-03-05T08:57:00.000Z" },
+        payload: { kind: "systemEvent", text: "Напомнить через 1 минуту проверить статус деплоя." },
+      },
+    });
+
+    const call = callGatewayMock.mock.calls[0]?.[0] as {
+      params?: { schedule?: { kind?: string; at?: string }; deleteAfterRun?: boolean };
+    };
+    expect(call.params?.schedule?.kind).toBe("at");
+    expect(call.params?.schedule?.at).toBe(new Date(now + 60_000).toISOString());
+    expect(call.params?.deleteAfterRun).toBe(true);
+  });
+
   it("keeps recurring schedules when reminder text explicitly says every", async () => {
     callGatewayMock.mockResolvedValueOnce({ ok: true });
 
