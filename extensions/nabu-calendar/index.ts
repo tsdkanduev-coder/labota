@@ -87,6 +87,10 @@ const NabuCalendarToolSchema = Type.Object({
     ],
     { description: "Action to perform" },
   ),
+  // chatId override (required for isolated cron sessions where messageTo is unavailable)
+  chatId: Type.Optional(
+    Type.Number({ description: "Telegram chat ID. Pass explicitly in cron/isolated sessions." }),
+  ),
   // setup
   icsUrl: Type.Optional(Type.String({ description: "Calendar .ics feed URL (for setup)" })),
   timezone: Type.Optional(
@@ -594,7 +598,6 @@ const nabuCalendarPlugin = {
     // ─── Register Tool ─────────────────────────────────────────
 
     api.registerTool((toolCtx) => {
-      const chatId = extractChatId(toolCtx.messageTo);
       const messageTo = toolCtx.messageTo;
 
       return {
@@ -605,6 +608,9 @@ const nabuCalendarPlugin = {
         parameters: NabuCalendarToolSchema,
 
         async execute(_toolCallId, params) {
+          // Resolve chatId: prefer messageTo (normal sessions), fall back to explicit param (cron/isolated)
+          const chatId = extractChatId(messageTo) ?? params.chatId ?? null;
+
           try {
             switch (params.action) {
               case "setup":
@@ -783,7 +789,7 @@ const nabuCalendarPlugin = {
             schedule: { kind: "cron", expr: `0 ${config.morningBriefHour} * * *`, tz: timezone },
             message: [
               `Morning check for chat ${chatId}.`,
-              `Call nabu_calendar with action="fetch" and date="today".`,
+              `Call nabu_calendar with action="fetch", date="today", chatId=${chatId}.`,
               `Analyze the day using the proactive model from your SKILL.md.`,
               `Check the "ledger" field: if ledger.inCooldown is true → reply "NO_REPLY".`,
               ``,
@@ -795,6 +801,7 @@ const nabuCalendarPlugin = {
               `If you message — be brief (2-4 lines). Mention only what matters, propose concrete actions.`,
               `AFTER sending a message, call nabu_calendar with action="record_incident", incidentId="morning-check-<today's date>", trigger="morning-check", textSnippet=<your message>.`,
               `If nothing important — reply "NO_REPLY". A normal day with normal meetings = NO_REPLY.`,
+              `If any tool call fails or returns an error — reply "NO_REPLY". NEVER report internal errors to the user.`,
               `Use the user's language (Russian if events are in Russian). Times in HH:MM, timezone: ${timezone}.`,
             ].join("\n"),
             delivery: deliveryTarget,
@@ -808,7 +815,7 @@ const nabuCalendarPlugin = {
             },
             message: [
               `Evening lookahead for chat ${chatId}.`,
-              `Call nabu_calendar with action="fetch" and date="tomorrow".`,
+              `Call nabu_calendar with action="fetch", date="tomorrow", chatId=${chatId}.`,
               `Analyze tomorrow using the proactive model from your SKILL.md.`,
               `Check the "ledger" field: if ledger.inCooldown is true → reply "NO_REPLY".`,
               ``,
@@ -821,6 +828,7 @@ const nabuCalendarPlugin = {
               `If you message — be brief (2-4 lines). Focus on what needs attention or preparation.`,
               `AFTER sending a message, call nabu_calendar with action="record_incident", incidentId="evening-lookahead-<tomorrow's date>", trigger="evening-lookahead", textSnippet=<your message>.`,
               `If nothing notable — reply "NO_REPLY". A normal day = NO_REPLY.`,
+              `If any tool call fails or returns an error — reply "NO_REPLY". NEVER report internal errors to the user.`,
               `Use the user's language. Times in HH:MM, timezone: ${timezone}.`,
             ].join("\n"),
             delivery: deliveryTarget,
@@ -830,7 +838,7 @@ const nabuCalendarPlugin = {
             schedule: { kind: "every", everyMs: config.syncIntervalMs },
             message: [
               `Periodic calendar sync for chat ${chatId}.`,
-              `Call nabu_calendar with action="fetch" and date="today".`,
+              `Call nabu_calendar with action="fetch", date="today", chatId=${chatId}.`,
               `Check the "diff" field AND "ledger" field in the response. Apply the proactive model from your SKILL.md:`,
               ``,
               `- If diff is EMPTY or has NO added/modified/removed items → reply "NO_REPLY".`,
@@ -846,6 +854,7 @@ const nabuCalendarPlugin = {
               `Examples of NO_REPLY: routine standup moved 15 min, team sync description updated, lunch block shifted.`,
               ``,
               `IMPORTANT: Never send status updates about sync process. Never explain what you're doing. Only alert on tier 1 changes.`,
+              `If any tool call fails or returns an error — reply "NO_REPLY". NEVER report internal errors to the user.`,
               `Use the user's language. Times in HH:MM, timezone: ${timezone}.`,
             ].join("\n"),
             delivery: deliveryTarget,
@@ -854,7 +863,7 @@ const nabuCalendarPlugin = {
             name: `nabu-memory-consolidation-${chatId}`,
             schedule: { kind: "cron", expr: `0 22 * * *`, tz: timezone },
             message: [
-              `Daily memory consolidation for chat ${chatId}.`,
+              `Daily memory consolidation for chat ${chatId}. Use chatId=${chatId} for all nabu_calendar calls.`,
               `This is an internal housekeeping task. Do NOT message the user.`,
               `Reply with exactly "NO_REPLY" after completing.`,
             ].join("\n"),
