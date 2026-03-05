@@ -7,7 +7,7 @@ export const NabuCalendarConfigSchema = z.object({
   timezone: z.string().default("Europe/Moscow"),
   morningBriefHour: z.number().int().min(0).max(23).default(8),
   eveningLookaheadHour: z.number().int().min(0).max(23).default(20),
-  syncIntervalMs: z.number().int().positive().default(900_000), // 15 min
+  syncIntervalMs: z.number().int().positive().default(7_200_000), // 2 hours
   maxProactivePerDay: z.number().int().positive().default(5),
   writeEnabled: z.boolean().default(false),
   // Note: no model/llmTimeout/llmRetryDelays — Nabu doesn't make direct LLM calls.
