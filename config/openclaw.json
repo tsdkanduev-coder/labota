@@ -141,6 +141,13 @@
           "writeEnabled": true
         }
       },
+      "nabu-places": {
+        "enabled": true,
+        "config": {
+          "enabled": true,
+          "defaultCity": "Москва"
+        }
+      },
       "voice-call": {
         "enabled": true,
         "config": {

@@ -1,0 +1,23 @@
+{
+  "id": "nabu-places",
+  "skills": ["./skills"],
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Nabu Places",
+      "help": "Enable the restaurant search & preferences assistant"
+    },
+    "defaultCity": {
+      "label": "Default city",
+      "help": "City for restaurant searches (e.g., Москва)",
+      "placeholder": "Москва"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "defaultCity": { "type": "string" }
+    }
+  }
+}

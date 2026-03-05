@@ -466,6 +466,19 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/nabu-places:
+    dependencies:
+      '@sinclair/typebox':
+        specifier: 0.34.48
+        version: 0.34.48
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/nextcloud-talk:
     devDependencies:
       openclaw:
