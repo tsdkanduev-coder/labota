@@ -141,13 +141,6 @@
           "writeEnabled": true
         }
       },
-      "nabu-places": {
-        "enabled": true,
-        "config": {
-          "enabled": true,
-          "searchModel": "gpt-4.1-mini"
-        }
-      },
       "voice-call": {
         "enabled": true,
         "config": {
