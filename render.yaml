@@ -3,8 +3,8 @@ services:
     name: openclaw
     runtime: docker
     plan: starter
-    dockerCommand: /app/docker-entrypoint.sh node openclaw.mjs gateway --allow-unconfigured
-    healthCheckPath: /health
+    dockerCommand: /app/scripts/render-gateway-start.sh
+    healthCheckPath: /
     envVars:
       - key: OPENCLAW_HOME
         value: /data
